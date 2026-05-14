@@ -135,3 +135,21 @@ This add-on is a helper signal only. Keep certified smoke and fire detection har
           title: "Possible fire alarm detected"
           message: "The fire audio monitor detected an alarm-like sound."
     ```
+
+## Local Testing
+
+Create a local virtual environment and install the development dependencies:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r requirements-dev.txt
+```
+
+Run the detector tests and a Python compile check:
+
+```sh
+python -m pytest fire_audio_monitor/tests
+python -m compileall fire_audio_monitor/app fire_audio_monitor/tests
+```

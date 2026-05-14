@@ -2,7 +2,7 @@ name: Fire Audio Monitor
 version: "0.1.0"
 slug: fire_audio_monitor
 description: Monitor microphone audio for deterministic fire alarm tones.
-url: https://github.com/example/fire-audio-monitor-addons/tree/main/fire_audio_monitor
+url: https://github.com/pgeml/HA_FireAudioMonitor/tree/main/fire_audio_monitor
 arch:
   - aarch64
   - amd64
