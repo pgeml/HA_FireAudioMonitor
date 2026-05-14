@@ -21,9 +21,11 @@ After `required_hits` consecutive hits, the add-on fires a Home Assistant event 
 | `audio_diagnostics_only` | When true, run startup audio diagnostics once and exit without capturing audio or entering the detection loop. |
 | `audio_diagnostics_on_startup` | When true, run full startup audio diagnostics once, then continue into the detection loop. |
 | `min_rms` | Minimum RMS volume required before FFT matching can pass. |
+| `min_band_energy_ratio` | Minimum share of FFT energy that must be inside the configured frequency band. |
 | `frequency_min_hz` | Lower bound of the target alarm frequency band. |
 | `frequency_max_hz` | Upper bound of the target alarm frequency band. |
 | `required_hits` | Consecutive matching samples required before firing an event. |
+| `clear_hits_required` | Consecutive clean samples required to clear and re-arm an active alarm. |
 | `cooldown_seconds` | Minimum seconds between fired events. |
 | `enable_presence_gate` | When true, read configured Home Assistant entities before firing. |
 | `presence_entities` | Entity IDs checked through the Home Assistant API. |
@@ -62,7 +64,7 @@ MQTT is intentionally deferred for the MVP. It can be added later as an optional
 
 ## Tuning
 
-Start with conservative settings and test against a real alarm sound at normal distance. Raise `min_rms` if normal household noise causes hits. Narrow the frequency band if unrelated tones match. Increase `required_hits` if short noises cause false positives.
+Start with conservative settings and test against a real alarm sound at normal distance. Raise `min_rms` if normal household noise causes hits. Raise `min_band_energy_ratio` if broad noise leaks into the band. Narrow the frequency band if unrelated tones match. Increase `required_hits` if short noises cause false positives. Increase `clear_hits_required` if the alarm clears too quickly between samples.
 
 This add-on is a helper signal only. Keep certified smoke and fire detection hardware installed and maintained.
 
@@ -73,8 +75,12 @@ Recommended tuning workflow:
 3. Watch the RMS and dominant frequency logs in a quiet room.
 4. Play or test the alarm sound at a realistic distance.
 5. Adjust `min_rms`, `frequency_min_hz`, and `frequency_max_hz`.
-6. Increase `required_hits` if short sounds cause false positives.
-7. Enable the presence gate only after audio detection is behaving predictably.
+6. Adjust `min_band_energy_ratio` if the frequency band is too permissive or too strict.
+7. Increase `required_hits` if short sounds cause false positives.
+8. Tune `clear_hits_required` so a continuous alarm does not rapidly clear and re-arm.
+9. Enable the presence gate only after audio detection is behaving predictably.
+
+The logs report configured thresholds, measured RMS, dominant frequency, band energy ratio, raw detection, confirmed detection, presence gate state, active alarm state, cooldown, and event status. Raw acoustic detection remains visible even when the presence gate blocks activation.
 
 ## Audio Troubleshooting
 

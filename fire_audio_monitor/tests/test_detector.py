@@ -43,6 +43,21 @@ def test_rejects_tone_outside_configured_band():
     assert result.passed is False
 
 
+def test_rejects_silence():
+    samples = np.zeros(16000)
+
+    result = detect_alarm_tone(
+        samples=samples,
+        sample_rate_hz=16000,
+        min_rms=0.01,
+        frequency_min_hz=3000,
+        frequency_max_hz=4000,
+    )
+
+    assert result.passed is False
+    assert result.rms == 0.0
+
+
 def test_rejects_low_rms_even_when_frequency_matches():
     samples = sine_wave(3200, amplitude=0.001)
 

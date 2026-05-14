@@ -21,9 +21,11 @@ class AppConfig:
     audio_diagnostics_only: bool = False
     audio_diagnostics_on_startup: bool = False
     min_rms: float = 0.02
+    min_band_energy_ratio: float = 0.35
     frequency_min_hz: int = 3000
     frequency_max_hz: int = 4000
     required_hits: int = 2
+    clear_hits_required: int = 2
     cooldown_seconds: int = 60
     enable_presence_gate: bool = False
     presence_entities: tuple[str, ...] = ()
@@ -49,9 +51,11 @@ def load_config(path: Path = OPTIONS_PATH) -> AppConfig:
             raw.get("audio_diagnostics_on_startup", AppConfig.audio_diagnostics_on_startup)
         ),
         min_rms=float(raw.get("min_rms", AppConfig.min_rms)),
+        min_band_energy_ratio=float(raw.get("min_band_energy_ratio", AppConfig.min_band_energy_ratio)),
         frequency_min_hz=int(raw.get("frequency_min_hz", AppConfig.frequency_min_hz)),
         frequency_max_hz=int(raw.get("frequency_max_hz", AppConfig.frequency_max_hz)),
         required_hits=int(raw.get("required_hits", AppConfig.required_hits)),
+        clear_hits_required=int(raw.get("clear_hits_required", AppConfig.clear_hits_required)),
         cooldown_seconds=int(raw.get("cooldown_seconds", AppConfig.cooldown_seconds)),
         enable_presence_gate=bool(raw.get("enable_presence_gate", AppConfig.enable_presence_gate)),
         presence_entities=tuple(str(entity) for entity in raw.get("presence_entities", ())),
@@ -75,7 +79,11 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("audio_capture_backend must be sounddevice or arecord")
     if config.required_hits <= 0:
         raise ValueError("required_hits must be positive")
+    if config.clear_hits_required <= 0:
+        raise ValueError("clear_hits_required must be positive")
     if not 0 <= config.min_rms <= 1:
         raise ValueError("min_rms must be between 0 and 1")
+    if not 0 <= config.min_band_energy_ratio <= 1:
+        raise ValueError("min_band_energy_ratio must be between 0 and 1")
     if config.enable_presence_gate and not config.presence_entities:
         raise ValueError("presence_entities must be set when enable_presence_gate is true")

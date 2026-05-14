@@ -10,6 +10,7 @@ from audio_capture import (
     list_input_devices,
     log_audio_diagnostics,
 )
+from alarm_state import AlarmState, AlarmTransition
 from config import AppConfig, load_config
 from detector import DetectionResult, detect_alarm_tone
 from ha_client import HomeAssistantClient
@@ -42,8 +43,11 @@ def main() -> None:
 
 
 def run_loop(config: AppConfig, client: HomeAssistantClient) -> None:
-    consecutive_hits = 0
-    last_event_at = 0.0
+    alarm_state = AlarmState(
+        required_hits=config.required_hits,
+        clear_hits_required=config.clear_hits_required,
+        cooldown_seconds=config.cooldown_seconds,
+    )
 
     while True:
         try:
@@ -80,37 +84,43 @@ def run_loop(config: AppConfig, client: HomeAssistantClient) -> None:
                 min_rms=config.min_rms,
                 frequency_min_hz=config.frequency_min_hz,
                 frequency_max_hz=config.frequency_max_hz,
+                min_band_ratio=config.min_band_energy_ratio,
             )
-            consecutive_hits = consecutive_hits + 1 if result.passed else 0
-            observed_hits = consecutive_hits
-            event_fired = False
-            event_status = "not-fired"
-
-            if observed_hits >= config.required_hits:
-                last_event_at, event_fired, event_status = maybe_fire_event(
-                    config,
-                    client,
-                    result,
-                    observed_hits,
-                    last_event_at,
-                )
-                consecutive_hits = 0
-            elif result.passed:
-                event_status = "waiting-for-required-hits"
-            else:
-                event_status = "detector-not-matched"
+            presence_gate_open = get_presence_gate_open(config, client)
+            transition = alarm_state.update(
+                detected=result.passed,
+                presence_gate_open=presence_gate_open,
+                now=time.monotonic(),
+            )
+            if transition.should_fire_event:
+                fire_detection_event(config, client, result, transition)
+                transition = alarm_state.mark_event_fired(time.monotonic(), transition)
 
             LOGGER.info(
-                "Detector result rms=%.4f dominant_frequency_hz=%.1f band_energy_ratio=%.3f "
-                "detected=%s hits=%s/%s event_fired=%s event_status=%s",
+                "Detector result configured_min_frequency_hz=%s configured_max_frequency_hz=%s "
+                "configured_min_rms=%.4f configured_min_band_energy_ratio=%.3f actual_rms=%.4f "
+                "actual_dominant_frequency_hz=%.1f actual_band_energy_ratio=%.3f detected=%s "
+                "hits=%s required_hits=%s clear_hits=%s required_clear_hits=%s confirmed_detected=%s "
+                "presence_gate_open=%s active_alarm=%s cooldown_remaining_seconds=%.1f "
+                "event_fired=%s event_status=%s",
+                config.frequency_min_hz,
+                config.frequency_max_hz,
+                config.min_rms,
+                config.min_band_energy_ratio,
                 result.rms,
                 result.peak_frequency_hz,
                 result.band_ratio,
-                result.passed,
-                observed_hits,
-                config.required_hits,
-                event_fired,
-                event_status,
+                transition.raw_detected,
+                transition.hits,
+                transition.required_hits,
+                transition.clear_hits,
+                transition.required_clear_hits,
+                transition.confirmed_detected,
+                transition.presence_gate_open,
+                transition.active_alarm,
+                transition.cooldown_remaining_seconds,
+                transition.event_fired,
+                transition.event_status,
             )
         except Exception:
             LOGGER.exception("Detection loop failed")
@@ -125,26 +135,26 @@ def _available_input_devices_for_log() -> str:
         return f"unavailable ({exc!r})"
 
 
-def maybe_fire_event(
+def get_presence_gate_open(config: AppConfig, client: HomeAssistantClient) -> bool:
+    if not config.enable_presence_gate:
+        return True
+    try:
+        return client.presence_gate_passes(
+            config.presence_entities,
+            config.trigger_when_presence_state,
+        )
+    except Exception as exc:
+        LOGGER.error("Presence gate check failed; treating gate as closed: %r", exc)
+        LOGGER.debug("Presence gate traceback", exc_info=True)
+        return False
+
+
+def fire_detection_event(
     config: AppConfig,
     client: HomeAssistantClient,
     result: DetectionResult,
-    consecutive_hits: int,
-    last_event_at: float,
-) -> tuple[float, bool, str]:
-    now = time.monotonic()
-    cooldown_remaining = config.cooldown_seconds - (now - last_event_at)
-    if cooldown_remaining > 0:
-        LOGGER.info("Detection matched, but cooldown has %.1f seconds remaining", cooldown_remaining)
-        return last_event_at, False, "cooldown"
-
-    if config.enable_presence_gate and not client.presence_gate_passes(
-        config.presence_entities,
-        config.trigger_when_presence_state,
-    ):
-        LOGGER.info("Detection matched, but presence gate did not pass")
-        return last_event_at, False, "presence-gate-blocked"
-
+    transition: AlarmTransition,
+) -> None:
     client.fire_event(
         config.ha_event_type,
         {
@@ -152,11 +162,10 @@ def maybe_fire_event(
             "peak_frequency_hz": round(result.peak_frequency_hz, 2),
             "band_ratio": round(result.band_ratio, 6),
             "required_hits": config.required_hits,
-            "observed_hits": consecutive_hits,
+            "observed_hits": transition.hits,
         },
     )
     LOGGER.warning("Fire alarm audio pattern detected; Home Assistant event fired")
-    return now, True, "event-fired"
 
 
 if __name__ == "__main__":
