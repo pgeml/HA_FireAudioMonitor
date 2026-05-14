@@ -75,7 +75,7 @@ If PortAudio shows no devices but `/dev/snd` exists, use ALSA direct capture:
 
 ```yaml
 audio_capture_backend: arecord
-audio_input_device: "plughw:1,0"
+audio_input_device: default
 ```
 
 For a USB microphone exposed as `/dev/snd/pcmC1D0c`, the ALSA card/device is usually `plughw:1,0`. `plughw` is preferred over `hw` because it allows ALSA to perform format and rate conversion when needed.
@@ -87,6 +87,27 @@ audio_diagnostics_only: true
 ```
 
 The Home Assistant Audio dropdown may not equal raw ALSA access inside an add-on container.
+
+## Known Home Assistant Add-on Audio Limitation
+
+`/dev/snd` visibility alone does not guarantee that raw ALSA card devices will work. Device paths such as `hw:0,0`, `hw:1,0`, and `plughw:1,0` require ALSA card metadata from `/proc/asound/cards`.
+
+In the observed Home Assistant add-on environment, `/dev/snd` nodes are visible but `/proc/asound/cards`, `/proc/asound/devices`, and `/proc/asound/pcm` are missing. In that state, `arecord -l` reports no soundcards and raw card devices fail with `Cannot get card index`.
+
+Try the Home Assistant-provided ALSA default path first:
+
+```yaml
+audio_capture_backend: arecord
+audio_input_device: default
+```
+
+This produces an `arecord` command like:
+
+```sh
+arecord -D default -f S16_LE -r 16000 -c 1 -d 3 /tmp/fire_audio_monitor_sample.wav
+```
+
+If `audio_input_device: default` also fails, raw microphone capture may require a different Home Assistant audio integration approach or a more privileged/custom container approach.
 
 Examples:
 
@@ -111,7 +132,7 @@ audio_input_device: "hw:1,0"
 audio_input_device: "plughw:1,0"
 ```
 
-Use `default`, an empty value, or omit the option to keep the default PortAudio behavior when `audio_capture_backend` is `sounddevice`. Use `arecord` with `plughw:1,0` when `/dev/snd` is visible but PortAudio cannot enumerate devices. Restart the add-on after changing the audio device configuration.
+Use `default`, an empty value, or omit the option to keep the default PortAudio behavior when `audio_capture_backend` is `sounddevice`. Use `arecord` with `default` when `/dev/snd` is visible but PortAudio cannot enumerate devices and `/proc/asound/cards` is missing. Restart the add-on after changing the audio device configuration.
 
 The add-on configuration uses Home Assistant's supported device path form:
 

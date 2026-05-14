@@ -79,9 +79,14 @@ def capture_audio_sounddevice(
 def capture_audio_arecord(
     record_seconds: int,
     sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
-    audio_input_device: str | int | None = "plughw:1,0",
+    audio_input_device: str | int | None = "default",
 ) -> tuple[np.ndarray, int]:
     selected_device = _arecord_device_name(audio_input_device)
+    if _looks_like_alsa_device_string(selected_device) and not Path("/proc/asound/cards").exists():
+        LOGGER.warning(
+            "Raw ALSA card devices cannot be resolved because /proc/asound/cards is missing. "
+            "Try audio_input_device=default or use the Home Assistant audio path."
+        )
     with NamedTemporaryFile(prefix="fire_audio_monitor_", suffix=".wav", dir="/tmp", delete=False) as tmp:
         sample_path = Path(tmp.name)
 

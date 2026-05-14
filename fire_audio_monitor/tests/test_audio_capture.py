@@ -79,6 +79,25 @@ def test_build_arecord_command():
     ]
 
 
+def test_build_arecord_command_with_default_device():
+    command = build_arecord_command("default", 16000, 3, Path("/tmp/fire_audio_monitor_sample.wav"))
+
+    assert command == [
+        "arecord",
+        "-D",
+        "default",
+        "-f",
+        "S16_LE",
+        "-r",
+        "16000",
+        "-c",
+        "1",
+        "-d",
+        "3",
+        "/tmp/fire_audio_monitor_sample.wav",
+    ]
+
+
 def test_read_int16_wav_as_float32(tmp_path):
     sample_path = tmp_path / "sample.wav"
     int_samples = np.array([-32768, -16384, 0, 16384, 32767], dtype="<i2")

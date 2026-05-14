@@ -17,7 +17,7 @@ class AppConfig:
     sample_interval_seconds: int = 5
     record_seconds: int = 3
     audio_capture_backend: str = "arecord"
-    audio_input_device: str = "plughw:1,0"
+    audio_input_device: str = "default"
     audio_diagnostics_only: bool = False
     min_rms: float = 0.02
     frequency_min_hz: int = 3000

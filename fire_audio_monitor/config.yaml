@@ -22,7 +22,7 @@ options:
   sample_interval_seconds: 5
   record_seconds: 3
   audio_capture_backend: arecord
-  audio_input_device: plughw:1,0
+  audio_input_device: default
   audio_diagnostics_only: false
   min_rms: 0.02
   frequency_min_hz: 3000
