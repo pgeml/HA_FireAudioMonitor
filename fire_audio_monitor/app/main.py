@@ -25,6 +25,8 @@ def main() -> None:
     configure_logging(config.log_level)
     client = HomeAssistantClient()
     LOGGER.info("Fire Audio Monitor started")
+    LOGGER.info("Selected audio capture backend: %s", config.audio_capture_backend)
+    LOGGER.info("Configured audio input device: %s", config.audio_input_device)
     log_audio_diagnostics()
     run_loop(config, client)
 
@@ -39,11 +41,13 @@ def run_loop(config: AppConfig, client: HomeAssistantClient) -> None:
                 samples, sample_rate_hz = capture_audio(
                     config.record_seconds,
                     audio_input_device=config.audio_input_device,
+                    audio_capture_backend=config.audio_capture_backend,
                 )
             except Exception as exc:
                 LOGGER.error(
-                    "Audio capture failed for configured audio_input_device=%r; "
+                    "Audio capture failed for backend=%r configured audio_input_device=%r; "
                     "available input devices=%s; error=%r",
+                    config.audio_capture_backend,
                     config.audio_input_device,
                     _available_input_devices_for_log(),
                     exc,

@@ -16,6 +16,7 @@ After `required_hits` consecutive hits, the add-on fires a Home Assistant event 
 | `log_level` | Python logging level. |
 | `sample_interval_seconds` | Delay between detection attempts. |
 | `record_seconds` | Audio duration for each sample. |
+| `audio_capture_backend` | Capture backend. Use `arecord` for ALSA direct capture or `sounddevice` for PortAudio capture. |
 | `audio_input_device` | Audio input device selector. Use `default`, an input device index such as `"0"`, a case-insensitive name substring such as `"USB PnP"`, or an ALSA-style string such as `"hw:1,0"` or `"plughw:1,0"`. |
 | `min_rms` | Minimum RMS volume required before FFT matching can pass. |
 | `frequency_min_hz` | Lower bound of the target alarm frequency band. |
@@ -65,13 +66,23 @@ This add-on is a helper signal only. Keep certified smoke and fire detection har
 
 ## Audio Troubleshooting
 
-If the add-on logs `sounddevice.PortAudioError: Error querying device -1`, PortAudio cannot see a usable default input device inside the add-on container. The Home Assistant add-on UI audio input selection and the Python/PortAudio default input device may not be identical.
+If the add-on logs `sounddevice.PortAudioError: Error querying device -1`, PortAudio cannot see a usable default input device inside the add-on container. The Home Assistant Audio dropdown is separate from `audio_input_device`, and the Home Assistant add-on UI audio input selection may not become the Python/PortAudio default input device.
 
 At startup, the add-on logs PortAudio host APIs, devices, the current `sounddevice.default.device`, selected audio environment variables, and filtered input devices. Use those logs to set `audio_input_device`.
+
+If PortAudio shows no devices but `/dev/snd` exists, use ALSA direct capture:
+
+```yaml
+audio_capture_backend: arecord
+audio_input_device: "plughw:1,0"
+```
+
+For a USB microphone exposed as `/dev/snd/pcmC1D0c`, the ALSA card/device is usually `plughw:1,0`. `plughw` is preferred over `hw` because it allows ALSA to perform format and rate conversion when needed.
 
 Examples:
 
 ```yaml
+audio_capture_backend: sounddevice
 audio_input_device: default
 ```
 
@@ -91,7 +102,7 @@ audio_input_device: "hw:1,0"
 audio_input_device: "plughw:1,0"
 ```
 
-Use `default`, an empty value, or omit the option to keep the default PortAudio behavior. Use a device index or name substring shown in the logs when the default input device is unavailable. ALSA-style device strings may work when PortAudio can open them directly, but if `sounddevice`/PortAudio does not handle them reliably in this add-on environment, a future fallback may use `arecord` subprocess capture instead. Restart the add-on after changing the audio device configuration.
+Use `default`, an empty value, or omit the option to keep the default PortAudio behavior when `audio_capture_backend` is `sounddevice`. Use `arecord` with `plughw:1,0` when `/dev/snd` is visible but PortAudio cannot enumerate devices. Restart the add-on after changing the audio device configuration.
 
 The add-on configuration uses Home Assistant's supported device path form:
 
@@ -109,7 +120,7 @@ ls -la /dev/snd
 cat /proc/asound/cards
 cat /proc/asound/devices
 arecord -l
-arecord -D hw:1,0 -f S16_LE -r 16000 -c 1 -d 3 /tmp/test.wav
+arecord -D plughw:1,0 -f S16_LE -r 16000 -c 1 -d 3 /tmp/test.wav
 ```
 
 ## Development Workflow

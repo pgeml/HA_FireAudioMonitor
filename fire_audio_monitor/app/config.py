@@ -16,7 +16,8 @@ class AppConfig:
     log_level: str = "info"
     sample_interval_seconds: int = 5
     record_seconds: int = 3
-    audio_input_device: str = "default"
+    audio_capture_backend: str = "arecord"
+    audio_input_device: str = "plughw:1,0"
     min_rms: float = 0.02
     frequency_min_hz: int = 3000
     frequency_max_hz: int = 4000
@@ -39,6 +40,7 @@ def load_config(path: Path = OPTIONS_PATH) -> AppConfig:
         log_level=str(raw.get("log_level", AppConfig.log_level)).lower(),
         sample_interval_seconds=int(raw.get("sample_interval_seconds", AppConfig.sample_interval_seconds)),
         record_seconds=int(raw.get("record_seconds", AppConfig.record_seconds)),
+        audio_capture_backend=str(raw.get("audio_capture_backend", AppConfig.audio_capture_backend)).lower(),
         audio_input_device=str(raw.get("audio_input_device", AppConfig.audio_input_device)),
         min_rms=float(raw.get("min_rms", AppConfig.min_rms)),
         frequency_min_hz=int(raw.get("frequency_min_hz", AppConfig.frequency_min_hz)),
@@ -63,6 +65,8 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("sample_interval_seconds must be positive")
     if config.record_seconds <= 0:
         raise ValueError("record_seconds must be positive")
+    if config.audio_capture_backend not in {"sounddevice", "arecord"}:
+        raise ValueError("audio_capture_backend must be sounddevice or arecord")
     if config.required_hits <= 0:
         raise ValueError("required_hits must be positive")
     if not 0 <= config.min_rms <= 1:

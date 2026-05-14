@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import wave
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 import numpy as np
@@ -29,6 +32,21 @@ def capture_audio(
     record_seconds: int,
     sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
     audio_input_device: str | int | None = "default",
+    audio_capture_backend: str = "arecord",
+) -> tuple[np.ndarray, int]:
+    backend = audio_capture_backend.strip().lower()
+    LOGGER.debug("Using audio capture backend %s", backend)
+    if backend == "arecord":
+        return capture_audio_arecord(record_seconds, sample_rate_hz, audio_input_device)
+    if backend == "sounddevice":
+        return capture_audio_sounddevice(record_seconds, sample_rate_hz, audio_input_device)
+    raise ValueError(f"Unsupported audio_capture_backend {audio_capture_backend!r}")
+
+
+def capture_audio_sounddevice(
+    record_seconds: int,
+    sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
+    audio_input_device: str | int | None = "default",
 ) -> tuple[np.ndarray, int]:
     if sd is None:
         raise RuntimeError("sounddevice is not installed")
@@ -50,6 +68,82 @@ def capture_audio(
     )
     sd.wait()
     return recording.reshape(-1), sample_rate_hz
+
+
+def capture_audio_arecord(
+    record_seconds: int,
+    sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
+    audio_input_device: str | int | None = "plughw:1,0",
+) -> tuple[np.ndarray, int]:
+    selected_device = _arecord_device_name(audio_input_device)
+    with NamedTemporaryFile(prefix="fire_audio_monitor_", suffix=".wav", dir="/tmp", delete=False) as tmp:
+        sample_path = Path(tmp.name)
+
+    command = build_arecord_command(selected_device, sample_rate_hz, record_seconds, sample_path)
+    LOGGER.debug("Recording audio with arecord device=%r command=%s", selected_device, command)
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=record_seconds + 5,
+        )
+        if result.returncode != 0:
+            LOGGER.error("arecord failed returncode=%s stderr=%s", result.returncode, result.stderr.strip())
+            raise RuntimeError(f"arecord failed with return code {result.returncode}: {result.stderr.strip()}")
+
+        samples, wav_sample_rate_hz = read_int16_wav_as_float32(sample_path)
+        if wav_sample_rate_hz != sample_rate_hz:
+            LOGGER.warning("arecord WAV sample rate was %s Hz, expected %s Hz", wav_sample_rate_hz, sample_rate_hz)
+        return samples, wav_sample_rate_hz
+    finally:
+        try:
+            sample_path.unlink(missing_ok=True)
+        except TypeError:  # Python < 3.8 compatibility guard.
+            if sample_path.exists():
+                sample_path.unlink()
+        except Exception as exc:
+            LOGGER.warning("Could not remove temporary audio sample %s: %r", sample_path, exc)
+
+
+def build_arecord_command(
+    audio_input_device: str,
+    sample_rate_hz: int,
+    record_seconds: int,
+    sample_path: Path,
+) -> list[str]:
+    return [
+        "arecord",
+        "-D",
+        audio_input_device,
+        "-f",
+        "S16_LE",
+        "-r",
+        str(sample_rate_hz),
+        "-c",
+        "1",
+        "-d",
+        str(record_seconds),
+        str(sample_path),
+    ]
+
+
+def read_int16_wav_as_float32(sample_path: Path) -> tuple[np.ndarray, int]:
+    with wave.open(str(sample_path), "rb") as wav_file:
+        channels = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        sample_rate_hz = wav_file.getframerate()
+        frames = wav_file.readframes(wav_file.getnframes())
+
+    if sample_width != 2:
+        raise ValueError(f"Expected 16-bit PCM WAV, got sample width {sample_width}")
+
+    int_samples = np.frombuffer(frames, dtype="<i2")
+    if channels > 1:
+        int_samples = int_samples.reshape(-1, channels).mean(axis=1).astype(np.int16)
+    float_samples = (int_samples.astype(np.float32) / 32768.0).reshape(-1)
+    return float_samples, sample_rate_hz
 
 
 def log_audio_diagnostics() -> None:
@@ -166,3 +260,10 @@ def log_linux_audio_paths() -> None:
 
 def _looks_like_alsa_device_string(value: str) -> bool:
     return value.lower().startswith(("hw:", "plughw:"))
+
+
+def _arecord_device_name(audio_input_device: str | int | None) -> str:
+    if audio_input_device is None:
+        return "default"
+    configured = str(audio_input_device).strip()
+    return configured if configured and configured.lower() != "default" else "default"
