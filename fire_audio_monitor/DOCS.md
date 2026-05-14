@@ -16,7 +16,7 @@ After `required_hits` consecutive hits, the add-on fires a Home Assistant event 
 | `log_level` | Python logging level. |
 | `sample_interval_seconds` | Delay between detection attempts. |
 | `record_seconds` | Audio duration for each sample. |
-| `audio_input_device` | Audio input device selector. Use `default`, an input device index such as `"0"`, or a case-insensitive name substring such as `"USB PnP"`. |
+| `audio_input_device` | Audio input device selector. Use `default`, an input device index such as `"0"`, a case-insensitive name substring such as `"USB PnP"`, or an ALSA-style string such as `"hw:1,0"` or `"plughw:1,0"`. |
 | `min_rms` | Minimum RMS volume required before FFT matching can pass. |
 | `frequency_min_hz` | Lower bound of the target alarm frequency band. |
 | `frequency_max_hz` | Upper bound of the target alarm frequency band. |
@@ -72,6 +72,10 @@ At startup, the add-on logs PortAudio host APIs, devices, the current `sounddevi
 Examples:
 
 ```yaml
+audio_input_device: default
+```
+
+```yaml
 audio_input_device: "USB PnP"
 ```
 
@@ -79,7 +83,34 @@ audio_input_device: "USB PnP"
 audio_input_device: "0"
 ```
 
-Use `default`, an empty value, or omit the option to keep the default PortAudio behavior. Use a device index or name substring shown in the logs when the default input device is unavailable. Restart the add-on after changing the audio device configuration.
+```yaml
+audio_input_device: "hw:1,0"
+```
+
+```yaml
+audio_input_device: "plughw:1,0"
+```
+
+Use `default`, an empty value, or omit the option to keep the default PortAudio behavior. Use a device index or name substring shown in the logs when the default input device is unavailable. ALSA-style device strings may work when PortAudio can open them directly, but if `sounddevice`/PortAudio does not handle them reliably in this add-on environment, a future fallback may use `arecord` subprocess capture instead. Restart the add-on after changing the audio device configuration.
+
+The add-on configuration uses Home Assistant's supported device path form:
+
+```yaml
+devices:
+  - /dev/snd
+```
+
+Older Docker-style mappings such as `/dev/snd:/dev/snd:rwm` are not the current Home Assistant add-on config format; the supported equivalent is the host device path above.
+
+For command-line diagnostics in an add-on shell or equivalent debug container, useful checks are:
+
+```sh
+ls -la /dev/snd
+cat /proc/asound/cards
+cat /proc/asound/devices
+arecord -l
+arecord -D hw:1,0 -f S16_LE -r 16000 -c 1 -d 3 /tmp/test.wav
+```
 
 ## Development Workflow
 

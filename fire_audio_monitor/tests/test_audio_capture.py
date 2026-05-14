@@ -30,6 +30,11 @@ def test_resolve_input_device_by_name_substring_case_insensitive():
     assert resolve_input_device("usb pnp", FAKE_DEVICES) == 1
 
 
+def test_resolve_allows_alsa_style_device_strings():
+    assert resolve_input_device("hw:1,0", FAKE_DEVICES) == "hw:1,0"
+    assert resolve_input_device("plughw:1,0", FAKE_DEVICES) == "plughw:1,0"
+
+
 def test_resolve_rejects_output_only_device_index():
     with pytest.raises(ValueError, match="not an available input device"):
         resolve_input_device("0", FAKE_DEVICES)

@@ -13,7 +13,10 @@ startup: services
 boot: auto
 init: false
 audio: true
+usb: true
 homeassistant_api: true
+devices:
+  - /dev/snd
 options:
   log_level: info
   sample_interval_seconds: 5

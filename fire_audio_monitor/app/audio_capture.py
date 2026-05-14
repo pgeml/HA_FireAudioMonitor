@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,6 +16,13 @@ except ImportError:  # pragma: no cover - runtime dependency is installed in the
 LOGGER = logging.getLogger(__name__)
 DEFAULT_SAMPLE_RATE_HZ = 16000
 _AUDIO_ENV_KEYS = ("PULSE_SERVER", "PULSE_COOKIE", "ALSA_CARD", "AUDIODEV")
+_AUDIO_DEVICE_PATHS = (
+    Path("/dev/snd"),
+    Path("/dev/snd/controlC0"),
+    Path("/dev/snd/controlC1"),
+    Path("/dev/snd/pcmC1D0c"),
+    Path("/dev/snd/by-id"),
+)
 
 
 def capture_audio(
@@ -51,6 +59,8 @@ def log_audio_diagnostics() -> None:
 
     for key in _AUDIO_ENV_KEYS:
         LOGGER.info("Audio env %s=%r", key, os.environ.get(key))
+
+    log_linux_audio_paths()
 
     try:
         LOGGER.info("sounddevice default device: %r", sd.default.device)
@@ -93,7 +103,7 @@ def list_input_devices(devices: list[dict[str, Any]] | None = None) -> list[dict
 def resolve_input_device(
     audio_input_device: str | int | None,
     devices: list[dict[str, Any]] | None = None,
-) -> int | None:
+) -> int | str | None:
     if audio_input_device is None:
         LOGGER.info("Using default audio input device")
         return None
@@ -102,6 +112,10 @@ def resolve_input_device(
     if configured == "" or configured.lower() == "default":
         LOGGER.info("Using default audio input device")
         return None
+
+    if _looks_like_alsa_device_string(configured):
+        LOGGER.info("Using ALSA-style audio input device string %r", configured)
+        return configured
 
     input_devices = list_input_devices(devices)
     if configured.lstrip("-").isdigit():
@@ -132,3 +146,23 @@ def format_input_devices(devices: list[dict[str, Any]]) -> str:
         f"{device['index']}: {device['name']} ({device['max_input_channels']} input channels)"
         for device in devices
     )
+
+
+def log_linux_audio_paths() -> None:
+    for path in _AUDIO_DEVICE_PATHS:
+        try:
+            LOGGER.info("Audio path %s exists=%s", path, path.exists())
+        except Exception as exc:
+            LOGGER.warning("Could not check audio path %s: %r", path, exc)
+
+    snd_path = Path("/dev/snd")
+    try:
+        if snd_path.exists() and snd_path.is_dir():
+            entries = sorted(entry.name for entry in snd_path.iterdir())
+            LOGGER.info("/dev/snd entries: %s", entries)
+    except Exception as exc:
+        LOGGER.warning("Could not list /dev/snd entries: %r", exc)
+
+
+def _looks_like_alsa_device_string(value: str) -> bool:
+    return value.lower().startswith(("hw:", "plughw:"))
