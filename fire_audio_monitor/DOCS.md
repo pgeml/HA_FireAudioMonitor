@@ -153,3 +153,64 @@ Run the detector tests and a Python compile check:
 python -m pytest fire_audio_monitor/tests
 python -m compileall fire_audio_monitor/app fire_audio_monitor/tests
 ```
+
+## Validation Ladder
+
+Use this ladder to separate quick local checks from real Home Assistant hardware validation.
+
+1. Local Python validation on Mac
+
+   This verifies the pure Python detector tests and syntax/import compilation. It does not validate Docker packaging, Home Assistant add-on installation, Supervisor API access, or microphone access on Raspberry Pi.
+
+   ```sh
+   python3 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install -U pip
+   python -m pip install -r requirements-dev.txt
+   python -m pytest fire_audio_monitor/tests
+   python -m compileall fire_audio_monitor/app fire_audio_monitor/tests
+   ```
+
+   If macOS sandbox or cache permissions interfere with `compileall`, redirect bytecode cache output:
+
+   ```sh
+   PYTHONPYCACHEPREFIX=/private/tmp/fire_audio_monitor_pycache python -m compileall fire_audio_monitor/app fire_audio_monitor/tests
+   ```
+
+2. Docker image build validation
+
+   Build the add-on image locally to catch Dockerfile and dependency installation problems:
+
+   ```sh
+   docker build -t fire-audio-monitor-test ./fire_audio_monitor
+   ```
+
+3. Optional container smoke test
+
+   A plain local container can verify that the image starts, but it may fail once the app expects Home Assistant add-on runtime pieces such as `/data/options.json`, `SUPERVISOR_TOKEN`, Supervisor API access, or audio devices.
+
+   macOS Docker may not expose a USB microphone the same way as Raspberry Pi / Home Assistant OS. Treat local Docker audio checks as limited packaging smoke tests, not final microphone validation.
+
+4. Home Assistant Add-on Store install test
+
+   Use the real add-on installation path:
+
+   - Push the latest commit to GitHub.
+   - Open Home Assistant.
+   - Go to **Settings > Add-ons > Add-on Store**.
+   - Open the three-dot menu and choose **Repositories**.
+   - Add:
+
+     ```text
+     https://github.com/pgeml/HA_FireAudioMonitor
+     ```
+
+   - Reload the add-on store.
+   - Install **Fire Audio Monitor**.
+   - Configure options.
+   - Start the add-on.
+   - Inspect logs.
+
+5. Raspberry Pi microphone/audio test
+
+   Validate the real target setup on Raspberry Pi / Home Assistant OS with the USB microphone connected. Start with `log_level: debug`, confirm samples are being recorded, test with the actual alarm sound at realistic distance, and tune only after confirming the add-on can access audio reliably.
