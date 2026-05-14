@@ -107,6 +107,8 @@ This produces an `arecord` command like:
 arecord -D default -f S16_LE -r 16000 -c 1 -d 3 /tmp/fire_audio_monitor_sample.wav
 ```
 
+When using Home Assistant's ALSA `default` device, the image needs the ALSA PulseAudio plugin. If the logs show `libasound_module_pcm_pulse.so` is missing, the Pulse ALSA plugin is not installed. This repository's Debian-based image installs `libasound2-plugins`; Alpine-based images would need the equivalent `alsa-plugins-pulse` package.
+
 If `audio_input_device: default` also fails, raw microphone capture may require a different Home Assistant audio integration approach or a more privileged/custom container approach.
 
 Examples:

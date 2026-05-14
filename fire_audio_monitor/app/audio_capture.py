@@ -25,6 +25,11 @@ _AUDIO_DEVICE_PATHS = (
     Path("/dev/snd/controlC1"),
     Path("/dev/snd/pcmC1D0c"),
     Path("/dev/snd/by-id"),
+    Path("/run/audio"),
+    Path("/run/dbus"),
+    Path("/run/pulse"),
+    Path("/run/user/0/pulse"),
+    Path("/tmp/pulse"),
 )
 _PROC_ASOUND_PATHS = (
     Path("/proc/asound/cards"),

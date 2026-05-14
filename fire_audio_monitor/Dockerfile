@@ -4,7 +4,7 @@ FROM ${BUILD_FROM}
 ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends alsa-utils portaudio19-dev \
+    && apt-get install -y --no-install-recommends alsa-utils libasound2-plugins portaudio19-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir numpy requests sounddevice
