@@ -16,6 +16,7 @@ class AppConfig:
     log_level: str = "info"
     sample_interval_seconds: int = 5
     record_seconds: int = 3
+    audio_input_device: str = "default"
     min_rms: float = 0.02
     frequency_min_hz: int = 3000
     frequency_max_hz: int = 4000
@@ -38,6 +39,7 @@ def load_config(path: Path = OPTIONS_PATH) -> AppConfig:
         log_level=str(raw.get("log_level", AppConfig.log_level)).lower(),
         sample_interval_seconds=int(raw.get("sample_interval_seconds", AppConfig.sample_interval_seconds)),
         record_seconds=int(raw.get("record_seconds", AppConfig.record_seconds)),
+        audio_input_device=str(raw.get("audio_input_device", AppConfig.audio_input_device)),
         min_rms=float(raw.get("min_rms", AppConfig.min_rms)),
         frequency_min_hz=int(raw.get("frequency_min_hz", AppConfig.frequency_min_hz)),
         frequency_max_hz=int(raw.get("frequency_max_hz", AppConfig.frequency_max_hz)),

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
-from audio_capture import capture_audio
+from audio_capture import capture_audio, format_input_devices, list_input_devices, log_audio_diagnostics
 from config import AppConfig, load_config
 from detector import DetectionResult, detect_alarm_tone
 from ha_client import HomeAssistantClient
@@ -25,6 +25,7 @@ def main() -> None:
     configure_logging(config.log_level)
     client = HomeAssistantClient()
     LOGGER.info("Fire Audio Monitor started")
+    log_audio_diagnostics()
     run_loop(config, client)
 
 
@@ -34,7 +35,23 @@ def run_loop(config: AppConfig, client: HomeAssistantClient) -> None:
 
     while True:
         try:
-            samples, sample_rate_hz = capture_audio(config.record_seconds)
+            try:
+                samples, sample_rate_hz = capture_audio(
+                    config.record_seconds,
+                    audio_input_device=config.audio_input_device,
+                )
+            except Exception as exc:
+                LOGGER.error(
+                    "Audio capture failed for configured audio_input_device=%r; "
+                    "available input devices=%s; error=%r",
+                    config.audio_input_device,
+                    _available_input_devices_for_log(),
+                    exc,
+                    exc_info=True,
+                )
+                time.sleep(config.sample_interval_seconds)
+                continue
+
             result = detect_alarm_tone(
                 samples=samples,
                 sample_rate_hz=sample_rate_hz,
@@ -60,6 +77,13 @@ def run_loop(config: AppConfig, client: HomeAssistantClient) -> None:
             LOGGER.exception("Detection loop failed")
 
         time.sleep(config.sample_interval_seconds)
+
+
+def _available_input_devices_for_log() -> str:
+    try:
+        return format_input_devices(list_input_devices())
+    except Exception as exc:
+        return f"unavailable ({exc!r})"
 
 
 def maybe_fire_event(

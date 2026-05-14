@@ -16,6 +16,7 @@ After `required_hits` consecutive hits, the add-on fires a Home Assistant event 
 | `log_level` | Python logging level. |
 | `sample_interval_seconds` | Delay between detection attempts. |
 | `record_seconds` | Audio duration for each sample. |
+| `audio_input_device` | Audio input device selector. Use `default`, an input device index such as `"0"`, or a case-insensitive name substring such as `"USB PnP"`. |
 | `min_rms` | Minimum RMS volume required before FFT matching can pass. |
 | `frequency_min_hz` | Lower bound of the target alarm frequency band. |
 | `frequency_max_hz` | Upper bound of the target alarm frequency band. |
@@ -61,6 +62,24 @@ MQTT is intentionally deferred for the MVP. It can be added later as an optional
 Start with conservative settings and test against a real alarm sound at normal distance. Raise `min_rms` if normal household noise causes hits. Narrow the frequency band if unrelated tones match. Increase `required_hits` if short noises cause false positives.
 
 This add-on is a helper signal only. Keep certified smoke and fire detection hardware installed and maintained.
+
+## Audio Troubleshooting
+
+If the add-on logs `sounddevice.PortAudioError: Error querying device -1`, PortAudio cannot see a usable default input device inside the add-on container. The Home Assistant add-on UI audio input selection and the Python/PortAudio default input device may not be identical.
+
+At startup, the add-on logs PortAudio host APIs, devices, the current `sounddevice.default.device`, selected audio environment variables, and filtered input devices. Use those logs to set `audio_input_device`.
+
+Examples:
+
+```yaml
+audio_input_device: "USB PnP"
+```
+
+```yaml
+audio_input_device: "0"
+```
+
+Use `default`, an empty value, or omit the option to keep the default PortAudio behavior. Use a device index or name substring shown in the logs when the default input device is unavailable. Restart the add-on after changing the audio device configuration.
 
 ## Development Workflow
 

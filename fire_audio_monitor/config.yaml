@@ -18,6 +18,7 @@ options:
   log_level: info
   sample_interval_seconds: 5
   record_seconds: 3
+  audio_input_device: default
   min_rms: 0.02
   frequency_min_hz: 3000
   frequency_max_hz: 4000
@@ -31,6 +32,7 @@ schema:
   log_level: list(trace|debug|info|warning|error|critical)
   sample_interval_seconds: int(1,300)
   record_seconds: int(1,30)
+  audio_input_device: str
   min_rms: float(0,1)
   frequency_min_hz: int(20,20000)
   frequency_max_hz: int(20,20000)
