@@ -1,0 +1,43 @@
+name: Fire Audio Monitor
+version: "0.1.0"
+slug: fire_audio_monitor
+description: Monitor microphone audio for deterministic fire alarm tones.
+url: https://github.com/example/fire-audio-monitor-addons/tree/main/fire_audio_monitor
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+startup: services
+boot: auto
+init: false
+audio: true
+homeassistant_api: true
+options:
+  log_level: info
+  sample_interval_seconds: 5
+  record_seconds: 3
+  min_rms: 0.02
+  frequency_min_hz: 3000
+  frequency_max_hz: 4000
+  required_hits: 2
+  cooldown_seconds: 60
+  enable_presence_gate: false
+  presence_entities: []
+  trigger_when_presence_state: "on"
+  ha_event_type: fire_audio_monitor_detected
+schema:
+  log_level: list(trace|debug|info|warning|error|critical)
+  sample_interval_seconds: int(1,300)
+  record_seconds: int(1,30)
+  min_rms: float(0,1)
+  frequency_min_hz: int(20,20000)
+  frequency_max_hz: int(20,20000)
+  required_hits: int(1,20)
+  cooldown_seconds: int(0,86400)
+  enable_presence_gate: bool
+  presence_entities:
+    - str
+  trigger_when_presence_state: str
+  ha_event_type: str
