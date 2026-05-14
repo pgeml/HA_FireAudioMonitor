@@ -26,6 +26,12 @@ _AUDIO_DEVICE_PATHS = (
     Path("/dev/snd/pcmC1D0c"),
     Path("/dev/snd/by-id"),
 )
+_PROC_ASOUND_PATHS = (
+    Path("/proc/asound/cards"),
+    Path("/proc/asound/devices"),
+    Path("/proc/asound/pcm"),
+    Path("/proc/asound/version"),
+)
 
 
 def capture_audio(
@@ -147,14 +153,16 @@ def read_int16_wav_as_float32(sample_path: Path) -> tuple[np.ndarray, int]:
 
 
 def log_audio_diagnostics() -> None:
-    if sd is None:
-        LOGGER.warning("Audio diagnostics unavailable because sounddevice is not installed")
-        return
-
     for key in _AUDIO_ENV_KEYS:
         LOGGER.info("Audio env %s=%r", key, os.environ.get(key))
 
     log_linux_audio_paths()
+    log_proc_asound_diagnostics()
+    log_audio_command_diagnostics()
+
+    if sd is None:
+        LOGGER.warning("sounddevice diagnostics unavailable because sounddevice is not installed")
+        return
 
     try:
         LOGGER.info("sounddevice default device: %r", sd.default.device)
@@ -256,6 +264,43 @@ def log_linux_audio_paths() -> None:
             LOGGER.info("/dev/snd entries: %s", entries)
     except Exception as exc:
         LOGGER.warning("Could not list /dev/snd entries: %r", exc)
+
+
+def log_proc_asound_diagnostics() -> None:
+    proc_asound = Path("/proc/asound")
+    try:
+        LOGGER.info("Audio path %s exists=%s", proc_asound, proc_asound.exists())
+    except Exception as exc:
+        LOGGER.warning("Could not check audio path %s: %r", proc_asound, exc)
+
+    for path in _PROC_ASOUND_PATHS:
+        try:
+            if not path.exists():
+                LOGGER.warning("%s missing", path)
+                continue
+            LOGGER.info("%s contents:\n%s", path, path.read_text(encoding="utf-8", errors="replace").strip())
+        except Exception as exc:
+            LOGGER.warning("Could not read %s: %r", path, exc)
+
+
+def log_audio_command_diagnostics() -> None:
+    for command in (
+        ["arecord", "-l"],
+        ["arecord", "-L"],
+        ["cat", "/proc/asound/cards"],
+        ["cat", "/proc/asound/devices"],
+    ):
+        try:
+            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=10)
+            LOGGER.info(
+                "Audio diagnostic command %s returncode=%s stdout=%s stderr=%s",
+                command,
+                result.returncode,
+                result.stdout.strip(),
+                result.stderr.strip(),
+            )
+        except Exception as exc:
+            LOGGER.warning("Audio diagnostic command %s failed: %r", command, exc)
 
 
 def _looks_like_alsa_device_string(value: str) -> bool:

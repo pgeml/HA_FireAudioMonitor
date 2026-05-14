@@ -18,6 +18,7 @@ class AppConfig:
     record_seconds: int = 3
     audio_capture_backend: str = "arecord"
     audio_input_device: str = "plughw:1,0"
+    audio_diagnostics_only: bool = False
     min_rms: float = 0.02
     frequency_min_hz: int = 3000
     frequency_max_hz: int = 4000
@@ -42,6 +43,7 @@ def load_config(path: Path = OPTIONS_PATH) -> AppConfig:
         record_seconds=int(raw.get("record_seconds", AppConfig.record_seconds)),
         audio_capture_backend=str(raw.get("audio_capture_backend", AppConfig.audio_capture_backend)).lower(),
         audio_input_device=str(raw.get("audio_input_device", AppConfig.audio_input_device)),
+        audio_diagnostics_only=bool(raw.get("audio_diagnostics_only", AppConfig.audio_diagnostics_only)),
         min_rms=float(raw.get("min_rms", AppConfig.min_rms)),
         frequency_min_hz=int(raw.get("frequency_min_hz", AppConfig.frequency_min_hz)),
         frequency_max_hz=int(raw.get("frequency_max_hz", AppConfig.frequency_max_hz)),

@@ -23,6 +23,7 @@ options:
   record_seconds: 3
   audio_capture_backend: arecord
   audio_input_device: plughw:1,0
+  audio_diagnostics_only: false
   min_rms: 0.02
   frequency_min_hz: 3000
   frequency_max_hz: 4000
@@ -38,6 +39,7 @@ schema:
   record_seconds: int(1,30)
   audio_capture_backend: list(sounddevice|arecord)
   audio_input_device: str
+  audio_diagnostics_only: bool
   min_rms: float(0,1)
   frequency_min_hz: int(20,20000)
   frequency_max_hz: int(20,20000)

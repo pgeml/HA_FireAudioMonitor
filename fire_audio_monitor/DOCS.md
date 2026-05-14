@@ -18,6 +18,7 @@ After `required_hits` consecutive hits, the add-on fires a Home Assistant event 
 | `record_seconds` | Audio duration for each sample. |
 | `audio_capture_backend` | Capture backend. Use `arecord` for ALSA direct capture or `sounddevice` for PortAudio capture. |
 | `audio_input_device` | Audio input device selector. Use `default`, an input device index such as `"0"`, a case-insensitive name substring such as `"USB PnP"`, or an ALSA-style string such as `"hw:1,0"` or `"plughw:1,0"`. |
+| `audio_diagnostics_only` | When true, run startup audio diagnostics once and exit without capturing audio or entering the detection loop. |
 | `min_rms` | Minimum RMS volume required before FFT matching can pass. |
 | `frequency_min_hz` | Lower bound of the target alarm frequency band. |
 | `frequency_max_hz` | Upper bound of the target alarm frequency band. |
@@ -68,7 +69,7 @@ This add-on is a helper signal only. Keep certified smoke and fire detection har
 
 If the add-on logs `sounddevice.PortAudioError: Error querying device -1`, PortAudio cannot see a usable default input device inside the add-on container. The Home Assistant Audio dropdown is separate from `audio_input_device`, and the Home Assistant add-on UI audio input selection may not become the Python/PortAudio default input device.
 
-At startup, the add-on logs PortAudio host APIs, devices, the current `sounddevice.default.device`, selected audio environment variables, and filtered input devices. Use those logs to set `audio_input_device`.
+At startup, the add-on logs Linux audio device paths, `/proc/asound` files, `arecord` diagnostics, PortAudio host APIs, devices, the current `sounddevice.default.device`, selected audio environment variables, and filtered input devices. Use those logs to set `audio_input_device`.
 
 If PortAudio shows no devices but `/dev/snd` exists, use ALSA direct capture:
 
@@ -78,6 +79,14 @@ audio_input_device: "plughw:1,0"
 ```
 
 For a USB microphone exposed as `/dev/snd/pcmC1D0c`, the ALSA card/device is usually `plughw:1,0`. `plughw` is preferred over `hw` because it allows ALSA to perform format and rate conversion when needed.
+
+If `arecord` reports `Cannot get card index`, `/dev/snd` device node visibility is probably not enough by itself. ALSA also needs card metadata from `/proc/asound`, especially files such as `/proc/asound/cards`, `/proc/asound/devices`, `/proc/asound/pcm`, and `/proc/asound/version`. Enable diagnostics-only mode to capture those logs without repeatedly attempting audio capture:
+
+```yaml
+audio_diagnostics_only: true
+```
+
+The Home Assistant Audio dropdown may not equal raw ALSA access inside an add-on container.
 
 Examples:
 
@@ -113,13 +122,19 @@ devices:
 
 Older Docker-style mappings such as `/dev/snd:/dev/snd:rwm` are not the current Home Assistant add-on config format; the supported equivalent is the host device path above.
 
+The current Home Assistant add-on `map` option is for named Home Assistant folders such as `config`, `share`, and `media`; it is not a general arbitrary `/proc/asound` bind mount. If `/proc/asound` is missing inside the add-on, document the logs and test whether Home Assistant OS/Supervisor exposes another supported audio path before adding unsupported config fields.
+
 For command-line diagnostics in an add-on shell or equivalent debug container, useful checks are:
 
 ```sh
 ls -la /dev/snd
+ls -la /proc/asound
 cat /proc/asound/cards
 cat /proc/asound/devices
+cat /proc/asound/pcm
+cat /proc/asound/version
 arecord -l
+arecord -L
 arecord -D plughw:1,0 -f S16_LE -r 16000 -c 1 -d 3 /tmp/test.wav
 ```
 

@@ -23,11 +23,15 @@ def configure_logging(level_name: str) -> None:
 def main() -> None:
     config = load_config()
     configure_logging(config.log_level)
-    client = HomeAssistantClient()
     LOGGER.info("Fire Audio Monitor started")
     LOGGER.info("Selected audio capture backend: %s", config.audio_capture_backend)
     LOGGER.info("Configured audio input device: %s", config.audio_input_device)
     log_audio_diagnostics()
+    if config.audio_diagnostics_only:
+        LOGGER.info("audio_diagnostics_only is enabled; exiting after startup diagnostics")
+        return
+
+    client = HomeAssistantClient()
     run_loop(config, client)
 
 
