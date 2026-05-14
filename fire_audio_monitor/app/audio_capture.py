@@ -43,7 +43,7 @@ def capture_audio(
     record_seconds: int,
     sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
     audio_input_device: str | int | None = "default",
-    audio_capture_backend: str = "arecord",
+    audio_capture_backend: str = "sounddevice",
 ) -> tuple[np.ndarray, int]:
     backend = audio_capture_backend.strip().lower()
     LOGGER.debug("Using audio capture backend %s", backend)
@@ -52,6 +52,25 @@ def capture_audio(
     if backend == "sounddevice":
         return capture_audio_sounddevice(record_seconds, sample_rate_hz, audio_input_device)
     raise ValueError(f"Unsupported audio_capture_backend {audio_capture_backend!r}")
+
+
+def describe_audio_selection(audio_capture_backend: str, audio_input_device: str | int | None) -> str:
+    backend = audio_capture_backend.strip().lower()
+    if backend == "sounddevice":
+        try:
+            resolved = resolve_input_device(audio_input_device)
+            return (
+                f"backend=sounddevice configured_input={audio_input_device!r} "
+                f"resolved_input={resolved if resolved is not None else 'default'}"
+            )
+        except Exception as exc:
+            return (
+                f"backend=sounddevice configured_input={audio_input_device!r} "
+                f"resolved_input=unavailable error={exc!r}"
+            )
+    if backend == "arecord":
+        return f"backend=arecord configured_input={audio_input_device!r} resolved_input={_arecord_device_name(audio_input_device)}"
+    return f"backend={backend!r} configured_input={audio_input_device!r} resolved_input=unsupported-backend"
 
 
 def capture_audio_sounddevice(

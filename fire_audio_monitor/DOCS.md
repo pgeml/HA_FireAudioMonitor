@@ -16,9 +16,10 @@ After `required_hits` consecutive hits, the add-on fires a Home Assistant event 
 | `log_level` | Python logging level. |
 | `sample_interval_seconds` | Delay between detection attempts. |
 | `record_seconds` | Audio duration for each sample. |
-| `audio_capture_backend` | Capture backend. Use `arecord` for ALSA direct capture or `sounddevice` for PortAudio capture. |
-| `audio_input_device` | Audio input device selector. Use `default`, an input device index such as `"0"`, a case-insensitive name substring such as `"USB PnP"`, or an ALSA-style string such as `"hw:1,0"` or `"plughw:1,0"`. |
+| `audio_capture_backend` | Capture backend. Use `sounddevice` for the preferred Home Assistant PulseAudio path or `arecord` for diagnostics/fallback. |
+| `audio_input_device` | Audio input device selector. Use `pulse` for the preferred Home Assistant path, `default`, an input device index such as `"0"`, a case-insensitive name substring such as `"USB PnP"`, or an ALSA-style string such as `"hw:1,0"` or `"plughw:1,0"`. |
 | `audio_diagnostics_only` | When true, run startup audio diagnostics once and exit without capturing audio or entering the detection loop. |
+| `audio_diagnostics_on_startup` | When true, run full startup audio diagnostics once, then continue into the detection loop. |
 | `min_rms` | Minimum RMS volume required before FFT matching can pass. |
 | `frequency_min_hz` | Lower bound of the target alarm frequency band. |
 | `frequency_max_hz` | Upper bound of the target alarm frequency band. |
@@ -65,11 +66,38 @@ Start with conservative settings and test against a real alarm sound at normal d
 
 This add-on is a helper signal only. Keep certified smoke and fire detection hardware installed and maintained.
 
+Recommended tuning workflow:
+
+1. Disable the presence gate with `enable_presence_gate: false`.
+2. Set `sample_interval_seconds` short, for example `5`.
+3. Watch the RMS and dominant frequency logs in a quiet room.
+4. Play or test the alarm sound at a realistic distance.
+5. Adjust `min_rms`, `frequency_min_hz`, and `frequency_max_hz`.
+6. Increase `required_hits` if short sounds cause false positives.
+7. Enable the presence gate only after audio detection is behaving predictably.
+
 ## Audio Troubleshooting
 
 If the add-on logs `sounddevice.PortAudioError: Error querying device -1`, PortAudio cannot see a usable default input device inside the add-on container. The Home Assistant Audio dropdown is separate from `audio_input_device`, and the Home Assistant add-on UI audio input selection may not become the Python/PortAudio default input device.
 
-At startup, the add-on logs Linux audio device paths, `/proc/asound` files, `arecord` diagnostics, PortAudio host APIs, devices, the current `sounddevice.default.device`, selected audio environment variables, and filtered input devices. Use those logs to set `audio_input_device`.
+The preferred Home Assistant add-on configuration is:
+
+```yaml
+audio_capture_backend: sounddevice
+audio_input_device: pulse
+```
+
+Normal startup logs a concise audio summary. To log Linux audio device paths, `/proc/asound` files, `arecord` diagnostics, PortAudio host APIs, devices, the current `sounddevice.default.device`, selected audio environment variables, and filtered input devices, enable one of:
+
+```yaml
+audio_diagnostics_on_startup: true
+```
+
+```yaml
+audio_diagnostics_only: true
+```
+
+`audio_diagnostics_only` exits after diagnostics. `audio_diagnostics_on_startup` continues into the detection loop after diagnostics.
 
 If PortAudio shows no devices but `/dev/snd` exists, use ALSA direct capture:
 
@@ -115,7 +143,7 @@ Examples:
 
 ```yaml
 audio_capture_backend: sounddevice
-audio_input_device: default
+audio_input_device: pulse
 ```
 
 ```yaml
@@ -134,7 +162,7 @@ audio_input_device: "hw:1,0"
 audio_input_device: "plughw:1,0"
 ```
 
-Use `default`, an empty value, or omit the option to keep the default PortAudio behavior when `audio_capture_backend` is `sounddevice`. Use `arecord` with `default` when `/dev/snd` is visible but PortAudio cannot enumerate devices and `/proc/asound/cards` is missing. Restart the add-on after changing the audio device configuration.
+Use `pulse` with `sounddevice` as the preferred Home Assistant path. Use `arecord` with `default` only as a diagnostic/fallback path when `/dev/snd` is visible but PortAudio cannot capture. Restart the add-on after changing the audio device configuration.
 
 The add-on configuration uses Home Assistant's supported device path form:
 

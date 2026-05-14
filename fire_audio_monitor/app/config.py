@@ -16,9 +16,10 @@ class AppConfig:
     log_level: str = "info"
     sample_interval_seconds: int = 5
     record_seconds: int = 3
-    audio_capture_backend: str = "arecord"
-    audio_input_device: str = "default"
+    audio_capture_backend: str = "sounddevice"
+    audio_input_device: str = "pulse"
     audio_diagnostics_only: bool = False
+    audio_diagnostics_on_startup: bool = False
     min_rms: float = 0.02
     frequency_min_hz: int = 3000
     frequency_max_hz: int = 4000
@@ -44,6 +45,9 @@ def load_config(path: Path = OPTIONS_PATH) -> AppConfig:
         audio_capture_backend=str(raw.get("audio_capture_backend", AppConfig.audio_capture_backend)).lower(),
         audio_input_device=str(raw.get("audio_input_device", AppConfig.audio_input_device)),
         audio_diagnostics_only=bool(raw.get("audio_diagnostics_only", AppConfig.audio_diagnostics_only)),
+        audio_diagnostics_on_startup=bool(
+            raw.get("audio_diagnostics_on_startup", AppConfig.audio_diagnostics_on_startup)
+        ),
         min_rms=float(raw.get("min_rms", AppConfig.min_rms)),
         frequency_min_hz=int(raw.get("frequency_min_hz", AppConfig.frequency_min_hz)),
         frequency_max_hz=int(raw.get("frequency_max_hz", AppConfig.frequency_max_hz)),

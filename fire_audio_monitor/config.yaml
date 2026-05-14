@@ -1,5 +1,5 @@
 name: Fire Audio Monitor
-version: "0.1.4"
+version: "0.1.5"
 slug: fire_audio_monitor
 description: Monitor microphone audio for deterministic fire alarm tones.
 url: https://github.com/pgeml/HA_FireAudioMonitor/tree/main/fire_audio_monitor
@@ -21,9 +21,10 @@ options:
   log_level: info
   sample_interval_seconds: 5
   record_seconds: 3
-  audio_capture_backend: arecord
-  audio_input_device: default
+  audio_capture_backend: sounddevice
+  audio_input_device: pulse
   audio_diagnostics_only: false
+  audio_diagnostics_on_startup: false
   min_rms: 0.02
   frequency_min_hz: 3000
   frequency_max_hz: 4000
@@ -40,6 +41,7 @@ schema:
   audio_capture_backend: list(sounddevice|arecord)
   audio_input_device: str
   audio_diagnostics_only: bool
+  audio_diagnostics_on_startup: bool
   min_rms: float(0,1)
   frequency_min_hz: int(20,20000)
   frequency_max_hz: int(20,20000)

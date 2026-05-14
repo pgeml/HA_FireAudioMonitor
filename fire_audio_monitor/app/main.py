@@ -3,7 +3,13 @@ from __future__ import annotations
 import logging
 import time
 
-from audio_capture import capture_audio, format_input_devices, list_input_devices, log_audio_diagnostics
+from audio_capture import (
+    capture_audio,
+    describe_audio_selection,
+    format_input_devices,
+    list_input_devices,
+    log_audio_diagnostics,
+)
 from config import AppConfig, load_config
 from detector import DetectionResult, detect_alarm_tone
 from ha_client import HomeAssistantClient
@@ -24,9 +30,9 @@ def main() -> None:
     config = load_config()
     configure_logging(config.log_level)
     LOGGER.info("Fire Audio Monitor started")
-    LOGGER.info("Selected audio capture backend: %s", config.audio_capture_backend)
-    LOGGER.info("Configured audio input device: %s", config.audio_input_device)
-    log_audio_diagnostics()
+    LOGGER.info("Audio selection: %s", describe_audio_selection(config.audio_capture_backend, config.audio_input_device))
+    if config.audio_diagnostics_only or config.audio_diagnostics_on_startup:
+        log_audio_diagnostics()
     if config.audio_diagnostics_only:
         LOGGER.info("audio_diagnostics_only is enabled; exiting after startup diagnostics")
         return
@@ -55,11 +61,19 @@ def run_loop(config: AppConfig, client: HomeAssistantClient) -> None:
                     config.audio_input_device,
                     _available_input_devices_for_log(),
                     exc,
-                    exc_info=True,
                 )
+                LOGGER.debug("Audio capture traceback", exc_info=True)
                 time.sleep(config.sample_interval_seconds)
                 continue
 
+            LOGGER.info(
+                "Audio capture succeeded backend=%s input_device=%s sample_rate_hz=%s samples=%s record_seconds=%s",
+                config.audio_capture_backend,
+                config.audio_input_device,
+                sample_rate_hz,
+                len(samples),
+                config.record_seconds,
+            )
             result = detect_alarm_tone(
                 samples=samples,
                 sample_rate_hz=sample_rate_hz,
@@ -68,19 +82,36 @@ def run_loop(config: AppConfig, client: HomeAssistantClient) -> None:
                 frequency_max_hz=config.frequency_max_hz,
             )
             consecutive_hits = consecutive_hits + 1 if result.passed else 0
-            LOGGER.debug(
-                "Detection result passed=%s rms=%.4f peak=%.1fHz band_ratio=%.3f hits=%s/%s",
-                result.passed,
+            observed_hits = consecutive_hits
+            event_fired = False
+            event_status = "not-fired"
+
+            if observed_hits >= config.required_hits:
+                last_event_at, event_fired, event_status = maybe_fire_event(
+                    config,
+                    client,
+                    result,
+                    observed_hits,
+                    last_event_at,
+                )
+                consecutive_hits = 0
+            elif result.passed:
+                event_status = "waiting-for-required-hits"
+            else:
+                event_status = "detector-not-matched"
+
+            LOGGER.info(
+                "Detector result rms=%.4f dominant_frequency_hz=%.1f band_energy_ratio=%.3f "
+                "detected=%s hits=%s/%s event_fired=%s event_status=%s",
                 result.rms,
                 result.peak_frequency_hz,
                 result.band_ratio,
-                consecutive_hits,
+                result.passed,
+                observed_hits,
                 config.required_hits,
+                event_fired,
+                event_status,
             )
-
-            if consecutive_hits >= config.required_hits:
-                last_event_at = maybe_fire_event(config, client, result, consecutive_hits, last_event_at)
-                consecutive_hits = 0
         except Exception:
             LOGGER.exception("Detection loop failed")
 
@@ -100,19 +131,19 @@ def maybe_fire_event(
     result: DetectionResult,
     consecutive_hits: int,
     last_event_at: float,
-) -> float:
+) -> tuple[float, bool, str]:
     now = time.monotonic()
     cooldown_remaining = config.cooldown_seconds - (now - last_event_at)
     if cooldown_remaining > 0:
         LOGGER.info("Detection matched, but cooldown has %.1f seconds remaining", cooldown_remaining)
-        return last_event_at
+        return last_event_at, False, "cooldown"
 
     if config.enable_presence_gate and not client.presence_gate_passes(
         config.presence_entities,
         config.trigger_when_presence_state,
     ):
         LOGGER.info("Detection matched, but presence gate did not pass")
-        return last_event_at
+        return last_event_at, False, "presence-gate-blocked"
 
     client.fire_event(
         config.ha_event_type,
@@ -125,7 +156,7 @@ def maybe_fire_event(
         },
     )
     LOGGER.warning("Fire alarm audio pattern detected; Home Assistant event fired")
-    return now
+    return now, True, "event-fired"
 
 
 if __name__ == "__main__":
