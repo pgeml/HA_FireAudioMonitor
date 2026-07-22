@@ -31,6 +31,99 @@ After `required_hits` consecutive hits, the add-on fires a Home Assistant event 
 | `presence_entities` | Entity IDs checked through the Home Assistant API. |
 | `trigger_when_presence_state` | Required entity state for the presence gate to pass. |
 | `ha_event_type` | Home Assistant event type fired on detection. |
+| `heartbeat_interval_seconds` | Health heartbeat interval; default `300` (minimum `60`). |
+| `runtime_metrics_interval_seconds` | Resource log interval; default `600`. |
+| `audio_failure_degraded_threshold` | Consecutive capture failures before degraded; default `3`. |
+| `audio_failure_restart_threshold` | Consecutive failures between stream recreations; default `5`, and never below the degraded threshold. |
+| `audio_unavailable_failure_seconds` | Time without a successful capture before failed/non-zero exit; default `600`. |
+| `max_detection_cycle_seconds` | Independent stalled-loop watchdog deadline; default `180`. Validation reserves time for capture, diagnostics, and configured API calls. Normal sleep/backoff extends the next progress deadline and does not cause a false stall. |
+| `audio_retry_backoff_seconds` | Delay after capture failure; default `5`. |
+| `device_diagnostics_interval_seconds` | Minimum interval for full audio diagnostics; default `3600`. |
+
+## Runtime health and lifecycle
+
+The add-on owns one audio backend and one HTTP session for its lifetime. The `sounddevice` backend opens an explicit callback `InputStream`, reuses it, and closes it on capture failure, configured restart, signal, or shutdown. Capture data passes through a bounded queue with a deadline; overflow or PortAudio status errors invalidate the sample instead of analyzing discontinuous audio. The `arecord` backend starts one process per capture, discards subprocess stdout/stderr to prevent output growth, terminates then kills and reaps a timed-out child, and removes its uniquely named temporary WAV in every path. Run the separately rate-limited audio diagnostics for detailed ALSA command output.
+
+Health is based on successful work, not process existence:
+
+- `healthy`: capture and complete detection cycles are succeeding.
+- `degraded`: consecutive audio or detection-cycle failures reached `audio_failure_degraded_threshold` while recovery continues. Home Assistant API availability is reported separately as `ha_health`.
+- `failed`: no successful capture or complete detection cycle occurred for `audio_unavailable_failure_seconds`. Failure events are attempted and the process exits non-zero so Supervisor can restart it.
+- recovery requires a complete successful capture and detection cycle.
+
+The stable events are `fire_audio_monitor_heartbeat`, `fire_audio_monitor_health_changed`, `fire_audio_monitor_failed`, and `fire_audio_monitor_recovered`. Payloads contain compact counters, health, uptime, an error category, and timestamp—never credentials or audio. Heartbeats and metrics are rate-limited. Runtime logs include `rss_bytes`, `virtual_bytes`, `open_fds`, `threads`, `load_1m`, uptime, cycle/failure/restart counts, temporary-file count, and health.
+
+SIGTERM and SIGINT only request shutdown; cleanup then runs in controlled application code to close/reap audio resources, close the HTTP pool, remove the active WAV, stop the watchdog, and log completion. If a call prevents loop progress longer than `max_detection_cycle_seconds`, the independent watchdog logs critical, gives backend cleanup two seconds, and then exits non-zero even if native cleanup is stuck. `boot: auto` starts the add-on with Home Assistant. Home Assistant's manifest `watchdog` field is a health-check URL, not a boolean, so this add-on does not declare it without an HTTP/TCP health endpoint. Supervisor's installed-add-on watchdog option is separate and should be enabled and verified on the target system if crash restart is required. A user-requested clean stop remains stopped. The add-on does not request additional privileges or bypass isolation.
+
+### Failure and recovery notifications
+
+```yaml
+automation:
+  - alias: Fire audio monitor failed
+    triggers:
+      - trigger: event
+        event_type: fire_audio_monitor_failed
+    actions:
+      - action: notify.mobile_app_phone
+        data:
+          title: Fire audio monitoring unavailable
+          message: "Health: {{ trigger.event.data.health }}; error: {{ trigger.event.data.last_error_category }}"
+  - alias: Fire audio monitor recovered
+    triggers:
+      - trigger: event
+        event_type: fire_audio_monitor_recovered
+    actions:
+      - action: notify.mobile_app_phone
+        data:
+          message: Fire audio monitoring recovered after a complete successful cycle.
+```
+
+### Missing heartbeat
+
+Create an `input_datetime.fire_audio_monitor_last_heartbeat` with date and time enabled. Update it on heartbeat, then alert after 12 minutes (more than twice the default interval):
+
+```yaml
+automation:
+  - alias: Store fire audio heartbeat
+    triggers:
+      - trigger: event
+        event_type: fire_audio_monitor_heartbeat
+    actions:
+      - action: input_datetime.set_datetime
+        target: {entity_id: input_datetime.fire_audio_monitor_last_heartbeat}
+        data: {timestamp: "{{ now().timestamp() }}"}
+  - alias: Fire audio heartbeat missing
+    triggers:
+      - trigger: time_pattern
+        minutes: "/2"
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ as_timestamp(now()) - state_attr('input_datetime.fire_audio_monitor_last_heartbeat', 'timestamp') > 720 }}
+    actions:
+      - action: notify.mobile_app_phone
+        data: {message: "Fire Audio Monitor heartbeat missing for 12 minutes."}
+```
+
+Use the Supervisor integration add-on running sensor, when available, to notify on stopped/restarted state. A controlled restart automation should wait for the failed/missing condition for several minutes, notify first, call the supported Supervisor add-on restart service, and use a helper counter plus a cooldown (for example, at most two restarts per hour). Never restart on the alarm-detection event, never loop full-host reboots, and never suppress a genuine alarm notification.
+
+## Home Assistant host safeguards
+
+Keep host monitoring outside this add-on. Enable Home Assistant System Monitor entities for disk use, memory use, load, and processor temperature; alert at site-appropriate sustained thresholds. Monitor the Home Assistant URL from another machine/device so a dead Raspberry Pi can still be reported. Alert when the Supervisor add-on state is stopped or changes unexpectedly. Use an existing `notify.*` service. For disk/memory/temperature warnings, require persistence (for example 10 minutes) to avoid transient alerts. Use a UPS and an external availability monitor where safety requirements justify them.
+
+## 10–14 day troubleshooting and validation
+
+Run the normal `sounddevice` backend for at least 10 days, then optionally A/B against `arecord` using the same detector settings. Save add-on logs daily and record the `Runtime metrics` line. RSS and virtual memory may settle initially but should not trend upward without bound; `open_fds`, `threads`, and `temp_files` should return to a stable baseline (`temp_files=0` between arecord captures). Cycles should advance at the configured cadence, heartbeats should arrive, and stream restarts/audio failures should correlate with logged device errors.
+
+If the host becomes unresponsive, collect before reboot when possible:
+
+1. Add-on logs and Settings → System → Logs for Supervisor/Core/Host.
+2. Add-on restart history and the last heartbeat timestamp.
+3. Memory, swap, disk free space, load, CPU temperature, and the runtime RSS/FD/thread lines.
+4. From an authorized Terminal/SSH add-on: `dmesg` or host journal entries for USB resets, ALSA, PortAudio, out-of-memory kills, I/O errors, and undervoltage.
+5. Container process FD information (`/proc/<pid>/fd`) only where supported; do not weaken protection mode to obtain it.
+
+Compare whether growth stops when the add-on is disabled and whether it differs between backends. Also test microphone unplug/replug, Core restart, add-on stop, and network/API interruption. This service supplements but does not replace certified, maintained fire detectors.
 
 ## Presence Gate
 

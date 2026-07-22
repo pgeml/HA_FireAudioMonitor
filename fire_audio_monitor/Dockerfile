@@ -14,4 +14,5 @@ COPY app/ /app/
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 
+STOPSIGNAL SIGTERM
 CMD ["/run.sh"]

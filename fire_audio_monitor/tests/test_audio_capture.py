@@ -1,5 +1,8 @@
 import sys
 import wave
+import subprocess
+import threading
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +11,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.audio_capture import (
+    ArecordCapture,
+    SoundDeviceCapture,
     build_arecord_command,
     capture_audio,
     list_input_devices,
@@ -149,3 +154,207 @@ def test_capture_audio_dispatches_to_sounddevice(monkeypatch):
 
     assert sample_rate_hz == 16000
     np.testing.assert_allclose(samples, np.array([0.2], dtype=np.float32))
+
+
+class FakeStream:
+    instances = []
+
+    def __init__(self, callback, **kwargs):
+        self.callback = callback
+        self.started = False
+        self.stopped = False
+        self.closed = False
+        self.instances.append(self)
+
+    def start(self):
+        self.started = True
+        self.callback(np.ones((16000, 1), dtype=np.float32), 16000, None, None)
+
+    def stop(self):
+        self.stopped = True
+
+    def close(self):
+        self.closed = True
+
+
+def test_sounddevice_stream_reused_and_closed(monkeypatch):
+    FakeStream.instances.clear()
+    monkeypatch.setattr("app.audio_capture.resolve_input_device", lambda value: None)
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=FakeStream))
+    backend = SoundDeviceCapture(1)
+    backend.capture(1)
+    threading.Timer(0.01, lambda: FakeStream.instances[0].callback(
+        np.ones((16000, 1), dtype=np.float32), 16000, None, None)).start()
+    backend.capture(1)
+    assert len(FakeStream.instances) == 1
+    backend.close()
+    assert FakeStream.instances[0].stopped and FakeStream.instances[0].closed
+
+
+def test_sounddevice_exception_closes_and_reopens(monkeypatch):
+    FakeStream.instances.clear()
+    monkeypatch.setattr("app.audio_capture.resolve_input_device", lambda value: None)
+    class SilentStream(FakeStream):
+        def start(self):
+            self.started = True
+
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=SilentStream))
+    backend = SoundDeviceCapture(1)
+    with pytest.raises(TimeoutError):
+        backend.capture(0.001)
+    assert FakeStream.instances[0].closed
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=FakeStream))
+    backend.capture(1)
+    assert len(FakeStream.instances) == 2
+    backend.restart()
+    assert FakeStream.instances[-1].closed
+
+
+def test_sounddevice_callback_overflow_is_nonblocking_and_discards_capture(monkeypatch):
+    class BurstStream(FakeStream):
+        def start(self):
+            self.started = True
+            for _ in range(17):
+                self.callback(np.ones((100, 1), dtype=np.float32), 100, None, None)
+
+    FakeStream.instances.clear()
+    monkeypatch.setattr("app.audio_capture.resolve_input_device", lambda value: None)
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=BurstStream))
+    backend = SoundDeviceCapture(1)
+    with pytest.raises(RuntimeError, match="queue overflowed"):
+        backend.capture(0.1)
+    assert backend.callback_overflows == 1
+    assert FakeStream.instances[0].closed
+
+
+def test_sounddevice_close_wakes_blocked_capture(monkeypatch):
+    class SilentStream(FakeStream):
+        def start(self):
+            self.started = True
+
+    FakeStream.instances.clear()
+    monkeypatch.setattr("app.audio_capture.resolve_input_device", lambda value: None)
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=SilentStream))
+    backend = SoundDeviceCapture(1)
+    errors = []
+    worker = threading.Thread(target=lambda: _capture_error(backend, errors))
+    worker.start()
+    for _ in range(100):
+        if FakeStream.instances:
+            break
+        threading.Event().wait(0.001)
+    backend.close()
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    assert isinstance(errors[0], InterruptedError)
+
+
+def _capture_error(backend, errors):
+    try:
+        backend.capture(5)
+    except Exception as exc:
+        errors.append(exc)
+
+
+def test_callbacks_from_closed_stream_cannot_feed_replacement(monkeypatch):
+    class ManualStream(FakeStream):
+        def start(self):
+            self.started = True
+
+    FakeStream.instances.clear()
+    monkeypatch.setattr("app.audio_capture.resolve_input_device", lambda value: None)
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=ManualStream))
+    backend = SoundDeviceCapture(1)
+    results = []
+    first = threading.Thread(target=lambda: results.append(backend.capture(1)[0]))
+    first.start()
+    while len(FakeStream.instances) < 1:
+        threading.Event().wait(0.001)
+    old_stream = FakeStream.instances[0]
+    old_stream.callback(np.ones((16000, 1), dtype=np.float32), 16000, None, None)
+    first.join(timeout=1)
+    backend.close()
+
+    second = threading.Thread(target=lambda: results.append(backend.capture(1)[0]))
+    second.start()
+    while len(FakeStream.instances) < 2:
+        threading.Event().wait(0.001)
+    old_stream.callback(np.zeros((16000, 1), dtype=np.float32), 16000, None, None)
+    threading.Event().wait(0.01)
+    assert second.is_alive()
+    FakeStream.instances[1].callback(np.full((16000, 1), 2, dtype=np.float32), 16000, None, None)
+    second.join(timeout=1)
+    assert not second.is_alive()
+    np.testing.assert_array_equal(results[1], np.full(16000, 2, dtype=np.float32))
+
+
+class TimeoutProcess:
+    def __init__(self, *args, **kwargs):
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+        self.calls = 0
+
+    def wait(self, timeout=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise subprocess.TimeoutExpired("arecord", timeout)
+        self.returncode = -15
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+
+def test_arecord_timeout_terminates_reaps_and_removes_temp(monkeypatch, tmp_path):
+    process = TimeoutProcess()
+    monkeypatch.setattr("app.audio_capture.subprocess.Popen", lambda *a, **k: process)
+    backend = ArecordCapture(1, temp_dir=str(tmp_path))
+    with pytest.raises(TimeoutError):
+        backend.capture(0.01)
+    assert process.terminated
+    assert process.calls == 2
+    assert not list(tmp_path.glob("fire_audio_monitor_*.wav"))
+
+
+def test_arecord_failure_removes_temp(monkeypatch, tmp_path):
+    process = TimeoutProcess()
+    process.wait = lambda timeout=None: 1
+    process.returncode = 1
+    monkeypatch.setattr("app.audio_capture.subprocess.Popen", lambda *a, **k: process)
+    backend = ArecordCapture(1, temp_dir=str(tmp_path))
+    with pytest.raises(RuntimeError):
+        backend.capture(1)
+    assert not list(tmp_path.glob("fire_audio_monitor_*.wav"))
+
+
+def test_arecord_success_removes_temp(monkeypatch, tmp_path):
+    class SuccessProcess:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return self.returncode
+
+    def start(command, **kwargs):
+        with wave.open(command[-1], "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(16000)
+            wav_file.writeframes(np.zeros(16, dtype="<i2").tobytes())
+        return SuccessProcess()
+
+    monkeypatch.setattr("app.audio_capture.subprocess.Popen", start)
+    backend = ArecordCapture(1, temp_dir=str(tmp_path))
+    samples, rate = backend.capture(1)
+    assert rate == 16000
+    assert len(samples) == 16
+    assert not list(tmp_path.glob("fire_audio_monitor_*.wav"))

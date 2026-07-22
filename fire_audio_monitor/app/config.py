@@ -31,6 +31,14 @@ class AppConfig:
     presence_entities: tuple[str, ...] = ()
     trigger_when_presence_state: str = "on"
     ha_event_type: str = "fire_audio_monitor_detected"
+    heartbeat_interval_seconds: int = 300
+    runtime_metrics_interval_seconds: int = 600
+    audio_failure_degraded_threshold: int = 3
+    audio_failure_restart_threshold: int = 5
+    audio_unavailable_failure_seconds: int = 600
+    max_detection_cycle_seconds: int = 180
+    audio_retry_backoff_seconds: int = 5
+    device_diagnostics_interval_seconds: int = 3600
 
 
 def load_config(path: Path = OPTIONS_PATH) -> AppConfig:
@@ -63,6 +71,14 @@ def load_config(path: Path = OPTIONS_PATH) -> AppConfig:
             raw.get("trigger_when_presence_state", AppConfig.trigger_when_presence_state)
         ),
         ha_event_type=str(raw.get("ha_event_type", AppConfig.ha_event_type)),
+        heartbeat_interval_seconds=int(raw.get("heartbeat_interval_seconds", AppConfig.heartbeat_interval_seconds)),
+        runtime_metrics_interval_seconds=int(raw.get("runtime_metrics_interval_seconds", AppConfig.runtime_metrics_interval_seconds)),
+        audio_failure_degraded_threshold=int(raw.get("audio_failure_degraded_threshold", AppConfig.audio_failure_degraded_threshold)),
+        audio_failure_restart_threshold=int(raw.get("audio_failure_restart_threshold", AppConfig.audio_failure_restart_threshold)),
+        audio_unavailable_failure_seconds=int(raw.get("audio_unavailable_failure_seconds", AppConfig.audio_unavailable_failure_seconds)),
+        max_detection_cycle_seconds=int(raw.get("max_detection_cycle_seconds", AppConfig.max_detection_cycle_seconds)),
+        audio_retry_backoff_seconds=int(raw.get("audio_retry_backoff_seconds", AppConfig.audio_retry_backoff_seconds)),
+        device_diagnostics_interval_seconds=int(raw.get("device_diagnostics_interval_seconds", AppConfig.device_diagnostics_interval_seconds)),
     )
     validate_config(config)
     return config
@@ -87,3 +103,31 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("min_band_energy_ratio must be between 0 and 1")
     if config.enable_presence_gate and not config.presence_entities:
         raise ValueError("presence_entities must be set when enable_presence_gate is true")
+    intervals = {
+        "heartbeat_interval_seconds": (config.heartbeat_interval_seconds, 60, 86400),
+        "runtime_metrics_interval_seconds": (config.runtime_metrics_interval_seconds, 60, 86400),
+        "audio_unavailable_failure_seconds": (config.audio_unavailable_failure_seconds, 30, 86400),
+        "max_detection_cycle_seconds": (config.max_detection_cycle_seconds, 2, 3600),
+        "audio_retry_backoff_seconds": (config.audio_retry_backoff_seconds, 1, 300),
+        "device_diagnostics_interval_seconds": (config.device_diagnostics_interval_seconds, 300, 604800),
+    }
+    for name, (value, minimum, maximum) in intervals.items():
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    # Capture can use record+5 seconds. A periodic diagnostics pass can use four
+    # 10-second subprocess deadlines. Reserve four HA API calls plus one per
+    # configured presence entity at the rounded 14-second request deadline.
+    minimum_cycle_seconds = (
+        config.record_seconds + 5 + 40 + 10 + 14 * (4 + len(config.presence_entities))
+    )
+    if config.max_detection_cycle_seconds < minimum_cycle_seconds:
+        raise ValueError(
+            "max_detection_cycle_seconds must be at least "
+            f"{minimum_cycle_seconds} for the configured capture and API operations"
+        )
+    if config.audio_failure_degraded_threshold < 1:
+        raise ValueError("audio_failure_degraded_threshold must be positive")
+    if config.audio_failure_restart_threshold < config.audio_failure_degraded_threshold:
+        raise ValueError("audio_failure_restart_threshold must be greater than or equal to audio_failure_degraded_threshold")
+    if config.audio_failure_restart_threshold > 100:
+        raise ValueError("audio_failure_restart_threshold must not exceed 100")
