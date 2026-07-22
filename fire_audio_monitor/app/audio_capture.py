@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import subprocess
+import threading
+import time
 import wave
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -37,6 +40,216 @@ _PROC_ASOUND_PATHS = (
     Path("/proc/asound/pcm"),
     Path("/proc/asound/version"),
 )
+
+
+class AudioCaptureBackend:
+    """Owned audio resource with deterministic capture and shutdown."""
+
+    restart_count = 0
+
+    def capture(self, timeout_seconds: float) -> tuple[np.ndarray, int]:
+        raise NotImplementedError
+
+    def restart(self) -> None:
+        self.close()
+        self.restart_count += 1
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class SoundDeviceCapture(AudioCaptureBackend):
+    def __init__(self, record_seconds: int, sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
+                 audio_input_device: str | int | None = "default") -> None:
+        if sd is None:
+            raise RuntimeError("sounddevice is not installed")
+        self.record_seconds = record_seconds
+        self.sample_rate_hz = sample_rate_hz
+        self.frames = int(record_seconds * sample_rate_hz)
+        self.device = resolve_input_device(audio_input_device)
+        self._stream: Any = None
+        self._chunks: queue.Queue[Any] = queue.Queue(maxsize=16)
+        self._capture_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._overflowed = threading.Event()
+        self._callback_error = threading.Event()
+        self.callback_overflows = 0
+        self.callback_status_errors = 0
+        self.restart_count = 0
+
+    def _make_callback(self, chunks: queue.Queue[Any], overflowed: threading.Event,
+                       callback_error: threading.Event) -> Callable[..., None]:
+        def callback(indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
+            del frames, time_info
+            if status:
+                self.callback_status_errors += 1
+                callback_error.set()
+            chunk = indata[:, 0].copy()
+            try:
+                chunks.put_nowait(chunk)
+            except queue.Full:
+                self.callback_overflows += 1
+                overflowed.set()
+        return callback
+
+    def _open(self) -> None:
+        with self._state_lock:
+            if self._stream is not None:
+                return
+            self._chunks = queue.Queue(maxsize=16)
+            self._overflowed = threading.Event()
+            self._callback_error = threading.Event()
+            stream = sd.InputStream(samplerate=self.sample_rate_hz, channels=1, dtype="float32",
+                                    device=self.device, callback=self._make_callback(
+                                        self._chunks, self._overflowed, self._callback_error))
+            try:
+                stream.start()
+            except Exception:
+                stream.close()
+                raise
+            self._stream = stream
+
+    def capture(self, timeout_seconds: float) -> tuple[np.ndarray, int]:
+        with self._capture_lock:
+            while True:
+                try:
+                    self._chunks.get_nowait()
+                except queue.Empty:
+                    break
+            self._open()
+            audio_queue = self._chunks
+            overflowed = self._overflowed
+            callback_error = self._callback_error
+            deadline = time.monotonic() + timeout_seconds
+            chunks: list[np.ndarray] = []
+            frame_count = 0
+            try:
+                while frame_count < self.frames:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"audio capture exceeded {timeout_seconds:.1f}s deadline")
+                    try:
+                        chunk = audio_queue.get(timeout=remaining)
+                    except queue.Empty as exc:
+                        raise TimeoutError(f"audio capture exceeded {timeout_seconds:.1f}s deadline") from exc
+                    if chunk is None:
+                        raise InterruptedError("audio capture was closed")
+                    if overflowed.is_set():
+                        raise RuntimeError("PortAudio callback queue overflowed; capture discarded")
+                    if callback_error.is_set():
+                        raise RuntimeError("PortAudio reported an input callback status error; capture discarded")
+                    chunks.append(chunk)
+                    frame_count += len(chunk)
+                return np.concatenate(chunks)[:self.frames], self.sample_rate_hz
+            except Exception:
+                self.close()
+                raise
+            finally:
+                chunks.clear()
+
+    def close(self) -> None:
+        with self._state_lock:
+            stream, self._stream = self._stream, None
+            chunks = self._chunks
+            try:
+                chunks.put_nowait(None)
+            except queue.Full:
+                try:
+                    chunks.get_nowait()
+                    chunks.put_nowait(None)
+                except (queue.Empty, queue.Full):
+                    pass
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception as exc:
+                LOGGER.warning("Could not stop PortAudio stream: %s", _short_error(exc))
+            try:
+                stream.close()
+            except Exception as exc:
+                LOGGER.warning("Could not close PortAudio stream: %s", _short_error(exc))
+
+
+class ArecordCapture(AudioCaptureBackend):
+    def __init__(self, record_seconds: int, sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
+                 audio_input_device: str | int | None = "default", temp_dir: str = "/tmp") -> None:
+        self.record_seconds = record_seconds
+        self.sample_rate_hz = sample_rate_hz
+        self.device = _arecord_device_name(audio_input_device)
+        self.temp_dir = temp_dir
+        self._process: subprocess.Popen[bytes] | None = None
+        self._sample_path: Path | None = None
+        self._capture_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self.restart_count = 0
+
+    def capture(self, timeout_seconds: float) -> tuple[np.ndarray, int]:
+        with self._capture_lock:
+            with NamedTemporaryFile(prefix="fire_audio_monitor_", suffix=".wav", dir=self.temp_dir,
+                                    delete=False) as tmp:
+                self._sample_path = Path(tmp.name)
+            command = build_arecord_command(self.device, self.sample_rate_hz, self.record_seconds, self._sample_path)
+            try:
+                process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with self._state_lock:
+                    self._process = process
+                try:
+                    process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired as exc:
+                    self._terminate_process(process)
+                    raise TimeoutError(f"arecord exceeded {timeout_seconds:.1f}s deadline") from exc
+                if process.returncode != 0:
+                    raise RuntimeError(f"arecord failed returncode={process.returncode}")
+                return read_int16_wav_as_float32(self._sample_path)
+            finally:
+                with self._state_lock:
+                    if self._process is locals().get("process"):
+                        self._process = None
+                self._remove_sample()
+
+    def _terminate_process(self, process: subprocess.Popen[bytes] | None = None) -> None:
+        if process is None:
+            with self._state_lock:
+                process = self._process
+        if process is None or process.poll() is not None:
+            return
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            process.wait()
+            return
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                LOGGER.error("arecord did not exit after SIGKILL")
+
+    def close(self) -> None:
+        with self._state_lock:
+            process, self._process = self._process, None
+        self._terminate_process(process)
+
+    def _remove_sample(self) -> None:
+        path, self._sample_path = self._sample_path, None
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception as exc:
+                LOGGER.warning("Could not remove temporary audio sample %s: %s", path, _short_error(exc))
+
+
+def create_audio_backend(record_seconds: int, sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
+                         audio_input_device: str | int | None = "default",
+                         audio_capture_backend: str = "sounddevice") -> AudioCaptureBackend:
+    backend = audio_capture_backend.strip().lower()
+    if backend == "sounddevice":
+        return SoundDeviceCapture(record_seconds, sample_rate_hz, audio_input_device)
+    if backend == "arecord":
+        return ArecordCapture(record_seconds, sample_rate_hz, audio_input_device)
+    raise ValueError(f"Unsupported audio_capture_backend {audio_capture_backend!r}")
 
 
 def capture_audio(
@@ -78,26 +291,11 @@ def capture_audio_sounddevice(
     sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
     audio_input_device: str | int | None = "default",
 ) -> tuple[np.ndarray, int]:
-    if sd is None:
-        raise RuntimeError("sounddevice is not installed")
-
-    frames = int(record_seconds * sample_rate_hz)
-    selected_device = resolve_input_device(audio_input_device)
-    LOGGER.debug(
-        "Recording %s seconds of audio at %s Hz using input device %r",
-        record_seconds,
-        sample_rate_hz,
-        selected_device if selected_device is not None else "default",
-    )
-    recording = sd.rec(
-        frames,
-        samplerate=sample_rate_hz,
-        channels=1,
-        dtype="float32",
-        device=selected_device,
-    )
-    sd.wait()
-    return recording.reshape(-1), sample_rate_hz
+    backend = SoundDeviceCapture(record_seconds, sample_rate_hz, audio_input_device)
+    try:
+        return backend.capture(record_seconds + 5)
+    finally:
+        backend.close()
 
 
 def capture_audio_arecord(
@@ -105,41 +303,11 @@ def capture_audio_arecord(
     sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
     audio_input_device: str | int | None = "default",
 ) -> tuple[np.ndarray, int]:
-    selected_device = _arecord_device_name(audio_input_device)
-    if _looks_like_alsa_device_string(selected_device) and not Path("/proc/asound/cards").exists():
-        LOGGER.warning(
-            "Raw ALSA card devices cannot be resolved because /proc/asound/cards is missing. "
-            "Try audio_input_device=default or use the Home Assistant audio path."
-        )
-    with NamedTemporaryFile(prefix="fire_audio_monitor_", suffix=".wav", dir="/tmp", delete=False) as tmp:
-        sample_path = Path(tmp.name)
-
-    command = build_arecord_command(selected_device, sample_rate_hz, record_seconds, sample_path)
-    LOGGER.debug("Recording audio with arecord device=%r command=%s", selected_device, command)
+    backend = ArecordCapture(record_seconds, sample_rate_hz, audio_input_device)
     try:
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=record_seconds + 5,
-        )
-        if result.returncode != 0:
-            LOGGER.error("arecord failed returncode=%s stderr=%s", result.returncode, result.stderr.strip())
-            raise RuntimeError(f"arecord failed with return code {result.returncode}: {result.stderr.strip()}")
-
-        samples, wav_sample_rate_hz = read_int16_wav_as_float32(sample_path)
-        if wav_sample_rate_hz != sample_rate_hz:
-            LOGGER.warning("arecord WAV sample rate was %s Hz, expected %s Hz", wav_sample_rate_hz, sample_rate_hz)
-        return samples, wav_sample_rate_hz
+        return backend.capture(record_seconds + 5)
     finally:
-        try:
-            sample_path.unlink(missing_ok=True)
-        except TypeError:  # Python < 3.8 compatibility guard.
-            if sample_path.exists():
-                sample_path.unlink()
-        except Exception as exc:
-            LOGGER.warning("Could not remove temporary audio sample %s: %r", sample_path, exc)
+        backend.close()
 
 
 def build_arecord_command(
@@ -341,3 +509,7 @@ def _arecord_device_name(audio_input_device: str | int | None) -> str:
         return "default"
     configured = str(audio_input_device).strip()
     return configured if configured and configured.lower() != "default" else "default"
+
+
+def _short_error(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {str(exc)[:240]}"

@@ -91,3 +91,13 @@ def test_presence_gate_open_allows_confirmed_detection_to_become_active():
     assert transition.confirmed_detected is True
     assert transition.active_alarm is True
     assert transition.should_fire_event is True
+
+
+def test_counters_saturate():
+    state = AlarmState(required_hits=2, clear_hits_required=3, cooldown_seconds=0)
+    for _ in range(100):
+        transition = state.update(True, True, 1.0)
+    assert transition.hits == 2
+    for _ in range(100):
+        transition = state.update(False, True, 2.0)
+    assert transition.clear_hits == 3

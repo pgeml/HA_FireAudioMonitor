@@ -4,7 +4,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.config import load_config
+import pytest
+
+from app.config import AppConfig, load_config, validate_config
 
 
 def test_load_config_audio_diagnostics_on_startup(tmp_path):
@@ -29,3 +31,12 @@ def test_load_config_audio_diagnostics_on_startup(tmp_path):
     assert config.audio_diagnostics_on_startup is True
     assert config.min_band_energy_ratio == 0.42
     assert config.clear_hits_required == 3
+
+
+def test_watchdog_deadline_covers_capture_diagnostics_and_api_budget():
+    with pytest.raises(ValueError, match="must be at least"):
+        validate_config(AppConfig(record_seconds=30, max_detection_cycle_seconds=100))
+
+
+def test_default_watchdog_budget_is_valid():
+    validate_config(AppConfig())

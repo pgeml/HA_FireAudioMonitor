@@ -32,11 +32,11 @@ class AlarmState:
 
     def update(self, detected: bool, presence_gate_open: bool, now: float) -> AlarmTransition:
         if detected:
-            self.hits += 1
+            self.hits = min(self.required_hits, self.hits + 1)
             self.clear_hits = 0
         else:
             self.hits = 0
-            self.clear_hits += 1
+            self.clear_hits = min(self.clear_hits_required, self.clear_hits + 1)
 
         if self.hits >= self.required_hits:
             self.confirmed_detected = True
