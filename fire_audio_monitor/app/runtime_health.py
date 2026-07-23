@@ -5,6 +5,7 @@ import os
 import resource
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
@@ -30,21 +31,39 @@ class RuntimeHealth:
     consecutive_ha_failures: int = 0
     total_ha_failures: int = 0
     total_cycles: int = 0
+    capture_attempts: int = 0
+    successful_captures: int = 0
+    consecutive_clean_cycles: int = 0
+    rolling_capture_window_size: int = 20
     last_error_category: str = "none"
     last_error_message: str = ""
     state: str = "healthy"
     ha_state: str = "healthy"
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _capture_results: deque[bool] = field(default_factory=deque, repr=False)
+    _callback_overflow_results: deque[bool] = field(default_factory=deque, repr=False)
+
+    def __post_init__(self) -> None:
+        self._capture_results = deque(maxlen=self.rolling_capture_window_size)
+        self._callback_overflow_results = deque(maxlen=self.rolling_capture_window_size)
 
     def audio_ok(self, now: float) -> None:
         with self._lock:
             self.last_audio_success = now
             self.consecutive_audio_failures = 0
+            self.capture_attempts += 1
+            self.successful_captures += 1
+            self._capture_results.append(True)
+            self._callback_overflow_results.append(False)
 
     def audio_failed(self, category: str, message: str) -> None:
         with self._lock:
             self.consecutive_audio_failures += 1
             self.total_audio_failures += 1
+            self.capture_attempts += 1
+            self.consecutive_clean_cycles = 0
+            self._capture_results.append(False)
+            self._callback_overflow_results.append("callback queue overflowed" in message.lower())
             self.last_error_category = category
             self.last_error_message = message[:240]
 
@@ -52,12 +71,14 @@ class RuntimeHealth:
         with self._lock:
             self.last_cycle_completed = now
             self.total_cycles += 1
+            self.consecutive_clean_cycles += 1
             self.consecutive_detection_failures = 0
 
     def detection_failed(self, category: str, message: str) -> None:
         with self._lock:
             self.consecutive_detection_failures += 1
             self.total_detection_failures += 1
+            self.consecutive_clean_cycles = 0
             self.last_error_category = category
             self.last_error_message = message[:240]
 
@@ -75,17 +96,28 @@ class RuntimeHealth:
             self.last_error_category = "home_assistant_api"
             self.last_error_message = message[:240]
 
-    def evaluate(self, now: float, degraded_threshold: int, unavailable_seconds: int) -> str:
+    def evaluate(self, now: float, degraded_threshold: int, unavailable_seconds: int,
+                 failure_ratio_threshold: float = 0.1, recovery_clean_cycles: int = 3) -> str:
         with self._lock:
             no_audio_for = now - (self.last_audio_success or self.started_monotonic)
             no_cycle_for = now - (self.last_cycle_completed or self.started_monotonic)
             self.ha_state = "degraded" if self.consecutive_ha_failures >= degraded_threshold else "healthy"
             if no_audio_for >= unavailable_seconds or no_cycle_for >= unavailable_seconds:
                 return "failed"
+            failure_ratio = self._rolling_failure_ratio()
             if (self.consecutive_audio_failures >= degraded_threshold or
-                    self.consecutive_detection_failures >= degraded_threshold):
+                    self.consecutive_detection_failures >= degraded_threshold or
+                    failure_ratio >= failure_ratio_threshold or
+                    any(self._callback_overflow_results)):
+                return "degraded"
+            if self.state in {"degraded", "failed"} and self.consecutive_clean_cycles < recovery_clean_cycles:
                 return "degraded"
             return "healthy"
+
+    def _rolling_failure_ratio(self) -> float:
+        if not self._capture_results:
+            return 0.0
+        return self._capture_results.count(False) / len(self._capture_results)
 
     def compact(self, now: float) -> dict[str, object]:
         with self._lock:
@@ -93,6 +125,12 @@ class RuntimeHealth:
                 "health": self.state, "ha_health": self.ha_state,
                 "uptime_seconds": round(now - self.started_monotonic),
                 "cycles": self.total_cycles, "audio_failures": self.total_audio_failures,
+                "capture_attempts": self.capture_attempts,
+                "successful_captures": self.successful_captures,
+                "completed_detection_cycles": self.total_cycles,
+                "rolling_audio_failure_ratio": round(self._rolling_failure_ratio(), 3),
+                "rolling_capture_window": len(self._capture_results),
+                "consecutive_clean_cycles": self.consecutive_clean_cycles,
                 "consecutive_audio_failures": self.consecutive_audio_failures,
                 "stream_restarts": self.stream_restarts, "ha_failures": self.total_ha_failures,
                 "detection_failures": self.total_detection_failures,

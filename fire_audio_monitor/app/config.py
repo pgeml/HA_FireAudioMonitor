@@ -35,6 +35,9 @@ class AppConfig:
     runtime_metrics_interval_seconds: int = 600
     audio_failure_degraded_threshold: int = 3
     audio_failure_restart_threshold: int = 5
+    rolling_capture_window: int = 20
+    audio_failure_ratio_degraded_threshold: float = 0.1
+    health_recovery_clean_cycles: int = 3
     audio_unavailable_failure_seconds: int = 600
     max_detection_cycle_seconds: int = 180
     audio_retry_backoff_seconds: int = 5
@@ -75,6 +78,11 @@ def load_config(path: Path = OPTIONS_PATH) -> AppConfig:
         runtime_metrics_interval_seconds=int(raw.get("runtime_metrics_interval_seconds", AppConfig.runtime_metrics_interval_seconds)),
         audio_failure_degraded_threshold=int(raw.get("audio_failure_degraded_threshold", AppConfig.audio_failure_degraded_threshold)),
         audio_failure_restart_threshold=int(raw.get("audio_failure_restart_threshold", AppConfig.audio_failure_restart_threshold)),
+        rolling_capture_window=int(raw.get("rolling_capture_window", AppConfig.rolling_capture_window)),
+        audio_failure_ratio_degraded_threshold=float(raw.get(
+            "audio_failure_ratio_degraded_threshold", AppConfig.audio_failure_ratio_degraded_threshold)),
+        health_recovery_clean_cycles=int(raw.get(
+            "health_recovery_clean_cycles", AppConfig.health_recovery_clean_cycles)),
         audio_unavailable_failure_seconds=int(raw.get("audio_unavailable_failure_seconds", AppConfig.audio_unavailable_failure_seconds)),
         max_detection_cycle_seconds=int(raw.get("max_detection_cycle_seconds", AppConfig.max_detection_cycle_seconds)),
         audio_retry_backoff_seconds=int(raw.get("audio_retry_backoff_seconds", AppConfig.audio_retry_backoff_seconds)),
@@ -131,3 +139,9 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("audio_failure_restart_threshold must be greater than or equal to audio_failure_degraded_threshold")
     if config.audio_failure_restart_threshold > 100:
         raise ValueError("audio_failure_restart_threshold must not exceed 100")
+    if not 1 <= config.rolling_capture_window <= 1000:
+        raise ValueError("rolling_capture_window must be between 1 and 1000")
+    if not 0 < config.audio_failure_ratio_degraded_threshold <= 1:
+        raise ValueError("audio_failure_ratio_degraded_threshold must be greater than 0 and at most 1")
+    if config.health_recovery_clean_cycles < 1:
+        raise ValueError("health_recovery_clean_cycles must be positive")

@@ -1,5 +1,5 @@
 name: Fire Audio Monitor
-version: "0.2.0"
+version: "0.2.1"
 slug: fire_audio_monitor
 description: Monitor microphone audio for deterministic fire alarm tones.
 url: https://github.com/pgeml/HA_FireAudioMonitor/tree/main/fire_audio_monitor
@@ -40,6 +40,9 @@ options:
   runtime_metrics_interval_seconds: 600
   audio_failure_degraded_threshold: 3
   audio_failure_restart_threshold: 5
+  rolling_capture_window: 20
+  audio_failure_ratio_degraded_threshold: 0.1
+  health_recovery_clean_cycles: 3
   audio_unavailable_failure_seconds: 600
   max_detection_cycle_seconds: 180
   audio_retry_backoff_seconds: 5
@@ -68,6 +71,9 @@ schema:
   runtime_metrics_interval_seconds: int(60,86400)
   audio_failure_degraded_threshold: int(1,100)
   audio_failure_restart_threshold: int(1,100)
+  rolling_capture_window: int(1,1000)
+  audio_failure_ratio_degraded_threshold: float(0,1)
+  health_recovery_clean_cycles: int(1,100)
   audio_unavailable_failure_seconds: int(30,86400)
   max_detection_cycle_seconds: int(2,3600)
   audio_retry_backoff_seconds: int(1,300)
