@@ -168,6 +168,7 @@ class FakeStream:
 
     def start(self):
         self.started = True
+        self.stopped = False
         self.callback(np.ones((16000, 1), dtype=np.float32), 16000, None, None)
 
     def stop(self):
@@ -183,12 +184,96 @@ def test_sounddevice_stream_reused_and_closed(monkeypatch):
     monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=FakeStream))
     backend = SoundDeviceCapture(1)
     backend.capture(1)
-    threading.Timer(0.01, lambda: FakeStream.instances[0].callback(
-        np.ones((16000, 1), dtype=np.float32), 16000, None, None)).start()
     backend.capture(1)
     assert len(FakeStream.instances) == 1
+    assert FakeStream.instances[0].stopped
     backend.close()
     assert FakeStream.instances[0].stopped and FakeStream.instances[0].closed
+
+
+def test_sounddevice_discards_audio_between_capture_generations(monkeypatch):
+    FakeStream.instances.clear()
+    monkeypatch.setattr("app.audio_capture.resolve_input_device", lambda value: None)
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=FakeStream))
+    backend = SoundDeviceCapture(1)
+    first, _ = backend.capture(1)
+    stream = FakeStream.instances[0]
+    for _ in range(20):  # Simulated audio during the configured sample interval.
+        stream.callback(np.zeros((16000, 1), dtype=np.float32), 16000, None, "overflow")
+    assert backend._chunks.empty()
+    assert not backend._overflowed.is_set()
+    second, _ = backend.capture(1)
+    np.testing.assert_array_equal(first, np.ones(16000, dtype=np.float32))
+    np.testing.assert_array_equal(second, np.ones(16000, dtype=np.float32))
+    assert stream.stopped
+
+
+def test_sounddevice_exact_frame_count_and_trims_final_block(monkeypatch):
+    class UnevenStream(FakeStream):
+        def start(self):
+            self.started = True
+            self.stopped = False
+            self.callback(np.ones((6, 1), dtype=np.float32), 6, None, None)
+            self.callback(np.full((6, 1), 2, dtype=np.float32), 6, None, None)
+
+    FakeStream.instances.clear()
+    monkeypatch.setattr("app.audio_capture.resolve_input_device", lambda value: None)
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=UnevenStream))
+    samples, _ = SoundDeviceCapture(1, sample_rate_hz=10).capture(1)
+    assert len(samples) == 10
+    np.testing.assert_array_equal(samples, np.r_[np.ones(6), np.full(4, 2)])
+
+
+def test_sounddevice_callback_status_cleared_for_next_capture(monkeypatch):
+    class StatusOnceStream(FakeStream):
+        starts = 0
+
+        def start(self):
+            self.started = True
+            self.stopped = False
+            type(self).starts += 1
+            status = "input overflow" if self.starts == 1 else None
+            self.callback(np.ones((16000, 1), dtype=np.float32), 16000, None, status)
+
+    FakeStream.instances.clear()
+    StatusOnceStream.starts = 0
+    monkeypatch.setattr("app.audio_capture.resolve_input_device", lambda value: None)
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=StatusOnceStream))
+    backend = SoundDeviceCapture(1)
+    with pytest.raises(RuntimeError, match="callback status"):
+        backend.capture(1)
+    assert FakeStream.instances[0].stopped and FakeStream.instances[0].closed
+    assert backend.capture(1)[0].shape == (16000,)
+
+
+def test_sounddevice_recreates_after_start_and_stop_failures(monkeypatch):
+    class LifecycleStream(FakeStream):
+        starts = 0
+        stops = 0
+
+        def start(self):
+            type(self).starts += 1
+            if self.starts == 1:
+                raise RuntimeError("start failed")
+            super().start()
+
+        def stop(self):
+            type(self).stops += 1
+            super().stop()
+            if self.stops == 1:
+                raise RuntimeError("stop failed")
+
+    FakeStream.instances.clear()
+    LifecycleStream.starts = LifecycleStream.stops = 0
+    monkeypatch.setattr("app.audio_capture.resolve_input_device", lambda value: None)
+    monkeypatch.setattr("app.audio_capture.sd", SimpleNamespace(InputStream=LifecycleStream))
+    backend = SoundDeviceCapture(1)
+    with pytest.raises(RuntimeError, match="start failed"):
+        backend.capture(1)
+    with pytest.raises(RuntimeError, match="Could not stop"):
+        backend.capture(1)
+    assert backend.capture(1)[0].shape == (16000,)
+    assert len(FakeStream.instances) == 3
 
 
 def test_sounddevice_exception_closes_and_reopens(monkeypatch):

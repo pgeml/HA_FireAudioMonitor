@@ -73,67 +73,85 @@ class SoundDeviceCapture(AudioCaptureBackend):
         self._state_lock = threading.Lock()
         self._overflowed = threading.Event()
         self._callback_error = threading.Event()
+        self._generation = 0
+        self._active_generation: int | None = None
+        self._stream_token: object | None = None
         self.callback_overflows = 0
         self.callback_status_errors = 0
         self.restart_count = 0
 
     def _make_callback(self, chunks: queue.Queue[Any], overflowed: threading.Event,
-                       callback_error: threading.Event) -> Callable[..., None]:
+                       callback_error: threading.Event, stream_token: object) -> Callable[..., None]:
         def callback(indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
             del frames, time_info
+            with self._state_lock:
+                generation = self._active_generation
+                active_stream = self._stream_token
+            if generation is None or active_stream is not stream_token:
+                return
             if status:
                 self.callback_status_errors += 1
                 callback_error.set()
             chunk = indata[:, 0].copy()
             try:
-                chunks.put_nowait(chunk)
+                chunks.put_nowait((generation, chunk))
             except queue.Full:
                 self.callback_overflows += 1
                 overflowed.set()
         return callback
 
-    def _open(self) -> None:
+    def _open(self) -> Any:
         with self._state_lock:
             if self._stream is not None:
-                return
-            self._chunks = queue.Queue(maxsize=16)
-            self._overflowed = threading.Event()
-            self._callback_error = threading.Event()
+                return self._stream
+            stream_token = object()
             stream = sd.InputStream(samplerate=self.sample_rate_hz, channels=1, dtype="float32",
                                     device=self.device, callback=self._make_callback(
-                                        self._chunks, self._overflowed, self._callback_error))
-            try:
-                stream.start()
-            except Exception:
-                stream.close()
-                raise
+                                        self._chunks, self._overflowed, self._callback_error,
+                                        stream_token))
             self._stream = stream
+            self._stream_token = stream_token
+            return stream
 
     def capture(self, timeout_seconds: float) -> tuple[np.ndarray, int]:
         with self._capture_lock:
-            while True:
-                try:
-                    self._chunks.get_nowait()
-                except queue.Empty:
-                    break
-            self._open()
-            audio_queue = self._chunks
-            overflowed = self._overflowed
-            callback_error = self._callback_error
+            with self._state_lock:
+                self._generation += 1
+                generation = self._generation
+                while True:
+                    try:
+                        self._chunks.get_nowait()
+                    except queue.Empty:
+                        break
+                self._overflowed.clear()
+                self._callback_error.clear()
+                audio_queue = self._chunks
+                overflowed = self._overflowed
+                callback_error = self._callback_error
+                self._active_generation = generation
+            stream = None
+            started = False
+            capture_error: BaseException | None = None
             deadline = time.monotonic() + timeout_seconds
             chunks: list[np.ndarray] = []
             frame_count = 0
             try:
+                stream = self._open()
+                stream.start()
+                started = True
                 while frame_count < self.frames:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError(f"audio capture exceeded {timeout_seconds:.1f}s deadline")
                     try:
-                        chunk = audio_queue.get(timeout=remaining)
+                        item = audio_queue.get(timeout=remaining)
                     except queue.Empty as exc:
                         raise TimeoutError(f"audio capture exceeded {timeout_seconds:.1f}s deadline") from exc
-                    if chunk is None:
+                    if item is None:
                         raise InterruptedError("audio capture was closed")
+                    item_generation, chunk = item
+                    if item_generation != generation:
+                        continue
                     if overflowed.is_set():
                         raise RuntimeError("PortAudio callback queue overflowed; capture discarded")
                     if callback_error.is_set():
@@ -141,15 +159,42 @@ class SoundDeviceCapture(AudioCaptureBackend):
                     chunks.append(chunk)
                     frame_count += len(chunk)
                 return np.concatenate(chunks)[:self.frames], self.sample_rate_hz
-            except Exception:
-                self.close()
+            except Exception as exc:
+                capture_error = exc
                 raise
             finally:
+                with self._state_lock:
+                    if self._active_generation == generation:
+                        self._active_generation = None
+                stop_error = None
+                if started:
+                    try:
+                        stream.stop()
+                    except Exception as exc:
+                        stop_error = exc
+                if capture_error is not None or stop_error is not None:
+                    self._discard_stream(stream)
                 chunks.clear()
+                if stop_error is not None and capture_error is None:
+                    raise RuntimeError(f"Could not stop PortAudio stream: {_short_error(stop_error)}") from stop_error
+
+    def _discard_stream(self, expected_stream: Any) -> None:
+        with self._state_lock:
+            if self._stream is not expected_stream:
+                return
+            stream, self._stream = self._stream, None
+            self._stream_token = None
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception as exc:
+                LOGGER.warning("Could not close PortAudio stream: %s", _short_error(exc))
 
     def close(self) -> None:
         with self._state_lock:
+            self._active_generation = None
             stream, self._stream = self._stream, None
+            self._stream_token = None
             chunks = self._chunks
             try:
                 chunks.put_nowait(None)
@@ -379,6 +424,24 @@ def log_audio_diagnostics() -> None:
         LOGGER.warning("Could not query sounddevice devices: %r", exc)
 
 
+def audio_diagnostics_summary() -> tuple[object, ...]:
+    """Log a compact backend summary and return a device-change signature."""
+    if sd is None:
+        LOGGER.info("Audio summary sounddevice=unavailable")
+        return ("unavailable",)
+    try:
+        default_device = sd.default.device
+        devices = list_input_devices(sd.query_devices())
+        signature = tuple((device["index"], device["name"], device["max_input_channels"])
+                          for device in devices)
+        LOGGER.info("Audio summary default_device=%r input_devices=%s",
+                    default_device, format_input_devices(devices))
+        return (default_device, signature)
+    except Exception as exc:
+        LOGGER.warning("Could not query compact audio summary: %s", _short_error(exc))
+        return ("error", type(exc).__name__, str(exc)[:120])
+
+
 def list_input_devices(devices: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     if devices is None:
         if sd is None:
@@ -473,7 +536,7 @@ def log_proc_asound_diagnostics() -> None:
     for path in _PROC_ASOUND_PATHS:
         try:
             if not path.exists():
-                LOGGER.warning("%s missing", path)
+                LOGGER.info("%s unavailable (expected with some PulseAudio containers)", path)
                 continue
             LOGGER.info("%s contents:\n%s", path, path.read_text(encoding="utf-8", errors="replace").strip())
         except Exception as exc:

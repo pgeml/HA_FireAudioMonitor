@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.config import AppConfig
 from app.detector import DetectionResult
 from app.main import FAILED_EVENT, HEARTBEAT_EVENT, RECOVERED_EVENT, MonitorService
-from app.runtime_health import LoopWatchdog
+from app.runtime_health import LoopWatchdog, RuntimeHealth
 
 
 class FakeAudio:
@@ -61,12 +61,70 @@ def test_health_transitions_and_events_once():
     service.run_cycle()
     assert service.health.state == "failed"
     clock[0] += 1
-    service.run_cycle()
+    for _ in range(20):
+        service.run_cycle()
     assert service.health.state == "healthy"
     event_types = [call.args[0] for call in client.fire_event.call_args_list]
     assert event_types.count(FAILED_EVENT) == 1
     assert event_types.count(RECOVERED_EVENT) == 1
     assert audio.restarts == 1
+
+
+def test_alternating_capture_results_are_degraded_and_history_is_bounded():
+    health = RuntimeHealth(started_monotonic=0, rolling_capture_window_size=20)
+    for index in range(100):
+        if index % 2:
+            health.audio_ok(float(index))
+            health.cycle_ok(float(index))
+        else:
+            health.audio_failed("audio_capture", "overflow")
+        health.state = health.evaluate(float(index), 3, 600)
+    metrics = health.compact(100)
+    assert health.state == "degraded"
+    assert metrics["rolling_audio_failure_ratio"] == 0.5
+    assert metrics["rolling_capture_window"] == 20
+    assert metrics["capture_attempts"] == 100
+    assert metrics["successful_captures"] == 50
+    assert metrics["completed_detection_cycles"] == 50
+
+
+def test_health_recovery_requires_clean_cycles_and_low_failure_ratio():
+    health = RuntimeHealth(started_monotonic=0, rolling_capture_window_size=4)
+    health.audio_failed("audio_capture", "overflow")
+    health.state = health.evaluate(1, 3, 600)
+    assert health.state == "degraded"
+    for now in (2, 3, 4):
+        health.audio_ok(now)
+        health.cycle_ok(now)
+        health.state = health.evaluate(now, 3, 600, 0.5, 3)
+    assert health.state == "healthy"
+
+
+def test_recent_callback_overflow_keeps_health_degraded_until_it_rolls_out():
+    health = RuntimeHealth(started_monotonic=0, rolling_capture_window_size=4)
+    health.audio_failed("audio_capture", "PortAudio callback queue overflowed; capture discarded")
+    for now in (2, 3, 4):
+        health.audio_ok(now)
+        health.cycle_ok(now)
+    health.state = health.evaluate(4, 3, 600, 0.5, 3)
+    assert health.state == "degraded"
+    health.audio_ok(5)
+    health.cycle_ok(5)
+    health.state = health.evaluate(5, 3, 600, 0.5, 3)
+    assert health.state == "healthy"
+
+
+def test_periodic_uses_compact_audio_diagnostics(monkeypatch):
+    service = MonitorService(config(), Mock(), FakeAudio(), monotonic=lambda: 300.0,
+                             fatal_exit=lambda code: None)
+    service._next_diagnostics = 0
+    compact = Mock(return_value=("pulse", ()))
+    full = Mock()
+    monkeypatch.setattr("app.main.audio_diagnostics_summary", compact)
+    monkeypatch.setattr("app.main.log_audio_diagnostics", full)
+    service._periodic()
+    compact.assert_called_once()
+    full.assert_not_called()
 
 
 def test_heartbeat_rate_limited():

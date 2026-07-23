@@ -10,7 +10,7 @@ from typing import Callable
 try:  # Support both /app execution and package imports in tests.
     from .alarm_state import AlarmState, AlarmTransition
     from .audio_capture import (AudioCaptureBackend, create_audio_backend, describe_audio_selection,
-                                log_audio_diagnostics)
+                                audio_diagnostics_summary, log_audio_diagnostics)
     from .config import AppConfig, load_config
     from .detector import DetectionResult, detect_alarm_tone
     from .ha_client import HomeAssistantClient
@@ -18,7 +18,7 @@ try:  # Support both /app execution and package imports in tests.
 except ImportError:  # pragma: no cover - add-on executes main.py directly.
     from alarm_state import AlarmState, AlarmTransition
     from audio_capture import (AudioCaptureBackend, create_audio_backend, describe_audio_selection,
-                               log_audio_diagnostics)
+                               audio_diagnostics_summary, log_audio_diagnostics)
     from config import AppConfig, load_config
     from detector import DetectionResult, detect_alarm_tone
     from ha_client import HomeAssistantClient
@@ -66,7 +66,8 @@ class MonitorService:
                                                     audio_capture_backend=config.audio_capture_backend)
         self.monotonic = monotonic
         self.fatal_exit = fatal_exit
-        self.health = RuntimeHealth(started_monotonic=monotonic())
+        self.health = RuntimeHealth(started_monotonic=monotonic(),
+                                    rolling_capture_window_size=config.rolling_capture_window)
         self.alarm_state = AlarmState(config.required_hits, config.clear_hits_required, config.cooldown_seconds)
         self.stop_event = threading.Event()
         self._closed = False
@@ -75,6 +76,7 @@ class MonitorService:
         self._next_heartbeat = started
         self._next_metrics = started
         self._next_diagnostics = started + config.device_diagnostics_interval_seconds
+        self._audio_device_signature: tuple[object, ...] | None = None
         self._pending_detection: tuple[dict[str, object], AlarmTransition] | None = None
         self._shutdown_thread: threading.Thread | None = None
         self._errors = ErrorRateLimiter()
@@ -120,6 +122,7 @@ class MonitorService:
                     LOGGER.warning("Audio backend restarted consecutive_failures=%s restarts=%s "
                                    "suppressed_similar=%s", self.health.consecutive_audio_failures,
                                    self.health.stream_restarts, suppressed)
+                    self._emit_full_diagnostics("audio_backend_restart", now)
             self._log_recurring_error("audio", message, now)
             self._update_health(complete_success=False)
             return False
@@ -193,7 +196,9 @@ class MonitorService:
     def _update_health(self, complete_success: bool) -> None:
         now = self.monotonic()
         new_state = self.health.evaluate(now, self.config.audio_failure_degraded_threshold,
-                                         self.config.audio_unavailable_failure_seconds)
+                                         self.config.audio_unavailable_failure_seconds,
+                                         self.config.audio_failure_ratio_degraded_threshold,
+                                         self.config.health_recovery_clean_cycles)
         old_state = self.health.state
         if new_state == old_state:
             return
@@ -201,10 +206,22 @@ class MonitorService:
         payload = self.health.compact(now) | {"previous_health": old_state, "timestamp": utc_now()}
         self._send_event(HEALTH_CHANGED_EVENT, payload)
         if new_state == "failed":
+            self._emit_full_diagnostics("prolonged_monitoring_failure", now)
             self._send_event(FAILED_EVENT, payload)
         elif new_state == "healthy" and complete_success and old_state in {"degraded", "failed"}:
             self._send_event(RECOVERED_EVENT, payload)
         LOGGER.warning("Monitoring health changed previous=%s current=%s", old_state, new_state)
+
+    def _emit_full_diagnostics(self, reason: str, now: float) -> None:
+        should_log, suppressed = self._errors.should_log(f"full_diagnostics:{reason}", now)
+        if not should_log:
+            return
+        LOGGER.warning("Emitting full audio diagnostics reason=%s suppressed_similar=%s",
+                       reason, suppressed)
+        try:
+            log_audio_diagnostics()
+        except Exception as exc:
+            self._log_recurring_error("audio_diagnostics", _short_error(exc), now)
 
     def _periodic(self) -> None:
         now = self.monotonic()
@@ -221,7 +238,11 @@ class MonitorService:
             self._next_metrics = now + self.config.runtime_metrics_interval_seconds
         if now >= self._next_diagnostics:
             try:
-                log_audio_diagnostics()
+                signature = audio_diagnostics_summary()
+                if self._audio_device_signature is not None and signature != self._audio_device_signature:
+                    LOGGER.warning("Audio device topology changed; emitting full diagnostics")
+                    log_audio_diagnostics()
+                self._audio_device_signature = signature
             except Exception as exc:
                 self._log_recurring_error("audio_diagnostics", _short_error(exc), now)
             self._next_diagnostics = now + self.config.device_diagnostics_interval_seconds
@@ -265,8 +286,7 @@ def main() -> int:
         LOGGER.info("Fire Audio Monitor started")
         LOGGER.info("Audio selection: %s", describe_audio_selection(config.audio_capture_backend,
                                                                      config.audio_input_device))
-        if config.audio_diagnostics_only or config.audio_diagnostics_on_startup:
-            log_audio_diagnostics()
+        log_audio_diagnostics()
         if config.audio_diagnostics_only:
             LOGGER.info("audio_diagnostics_only enabled; exiting")
             return 0
